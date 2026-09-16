@@ -23,7 +23,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import contractModel from '../utils/contract.json';
 import { labelValue, text12, text9 } from '../helper/textFormat.helper';
-import { ContractEquipment } from '../types/contractEquipment';
 import { ELeaseById } from 'src/routes/elease/types/eLeaseById';
 import { ELease, LeaseItem } from 'generated/prisma/client';
 
@@ -34,7 +33,7 @@ export class FormatService {
     const lessee = data.lessee;
     const equipments = data.leaseItems;
     const { equipment, client, clientLessee, headers, paragraph } =
-      contractModel as ContractEquipment;
+      contractModel;
 
     const startDate = new Date(data.startDate).toLocaleDateString('pt-BR', {
       timeZone: 'America/Sao_Paulo',

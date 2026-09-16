@@ -156,7 +156,7 @@ export class ELeaseService {
               status: StatusEquipment.AVAILABLE,
             },
             data: {
-              status: StatusEquipment.PENDING as StatusEquipment,
+              status: StatusEquipment.PENDING,
               eleaseId: createLease.id,
             },
           });
