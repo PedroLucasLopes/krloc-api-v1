@@ -12,6 +12,7 @@ import { EditLesseeDto } from '../dto/editLessee.dto';
 import { ZipcodeService } from 'src/global/address/zipcode.service';
 import { AddressValidator } from 'src/global/address/address.validator';
 import { normalizeApiAddress } from 'src/global/utils/normalizeApiAddress.utils';
+import { zipcodeAddress } from 'src/global/utils/zipcodeAddress.utils';
 
 @Injectable()
 export class LesseeService {
@@ -98,11 +99,7 @@ export class LesseeService {
     const createLessee = await this.prisma.lessee.create({
       data: {
         ...data,
-        zipcode: zipCode.cep,
-        address: zipCode.logradouro ?? data.address,
-        city: zipCode.localidade ?? data.city,
-        neighborhood: zipCode.bairro ?? data.neighborhood,
-        state: zipCode.uf ?? data.state,
+        ...zipcodeAddress(zipCode, data),
         clientId: clientIdExists.id,
       },
     });
@@ -119,32 +116,6 @@ export class LesseeService {
       throw new BadRequestException('This lessee does not exist!');
     }
 
-    this.addressValidator.validate(
-      {
-        address: lesseeExists.address,
-        city: lesseeExists.city,
-        state: lesseeExists?.state,
-        neighborhood: lesseeExists?.neighborhood,
-      },
-      data,
-    );
-
-    const validatedData: EditLesseeDto = { ...data };
-
-    const bodyZipCode = data.zipcode && data.zipcode.replace(/-/g, '');
-
-    if (data.zipcode && bodyZipCode !== lesseeExists.zipcode) {
-      const zipCode = await this.zipcodeService.getZipcode(data.zipcode);
-      this.addressValidator.validate(normalizeApiAddress(zipCode), data);
-      Object.assign(validatedData, {
-        zipcode: zipCode.cep,
-        address: zipCode.logradouro ?? data.address,
-        city: zipCode.localidade ?? data.city,
-        neighborhood: zipCode.bairro ?? data.neighborhood,
-        state: zipCode.uf ?? data.state,
-      });
-    }
-
     if (data.clientId) {
       const clientExists = await this.prisma.client.findUnique({
         where: { id: data.clientId },
@@ -154,14 +125,40 @@ export class LesseeService {
         throw new NotFoundException('Client Not Found!');
       }
 
-      if (clientExists && id !== clientExists.id) {
+      // Mandar o cliente atual e aceito; so a troca de dono e recusada.
+      if (clientExists.id !== lesseeExists.clientId) {
         throw new BadRequestException('Lessee cant change of owner');
       }
+    }
 
-      Object.assign(validatedData, {
-        ...validatedData,
-        clientId: clientExists.id,
-      });
+    const zipcode = data.zipcode?.replace(/-/g, '');
+    const zipcodeChanged = !!zipcode && zipcode !== lesseeExists.zipcode;
+    const addressSent = [
+      data.address,
+      data.neighborhood,
+      data.city,
+      data.state,
+    ].some((field) => field !== undefined);
+
+    const validatedData: EditLesseeDto = { ...data, zipcode };
+
+    // O endereco enviado e conferido contra a base do CEP, nunca contra o que
+    // estava gravado: o gravado pertence ao CEP antigo. Com o mesmo CEP, o que o
+    // corpo nao traz continua o gravado; com CEP novo, o gravado nao vale mais.
+    if (zipcodeChanged || addressSent) {
+      const zipCode = await this.zipcodeService.getZipcode(
+        zipcode || lesseeExists.zipcode,
+      );
+
+      this.addressValidator.validate(normalizeApiAddress(zipCode), data);
+
+      Object.assign(
+        validatedData,
+        zipcodeAddress(
+          zipCode,
+          zipcodeChanged ? data : { ...lesseeExists, ...data },
+        ),
+      );
     }
 
     const editLessee = this.prisma.lessee.update({
@@ -173,15 +170,20 @@ export class LesseeService {
   }
 
   async deleteLessee(id: string): Promise<void> {
-    const haveAELease = await this.prisma.lessee.findUnique({
+    const lessee = await this.prisma.lessee.findUnique({
       where: { id },
-      include: { eleases: true },
+      include: { _count: { select: { eleases: true } } },
     });
 
-    if (haveAELease?.eleases !== null) {
+    if (!lessee) {
+      throw new NotFoundException('This lessee does not exist');
+    }
+
+    // Contrato encerrado tambem conta: o historico dele aponta para a obra.
+    if (lessee._count.eleases > 0) {
       throw new BadRequestException('This lessee have an ongoing contract');
     }
 
-    return;
+    await this.prisma.lessee.delete({ where: { id } });
   }
 }

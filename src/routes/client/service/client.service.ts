@@ -8,6 +8,7 @@ import { EditClientDto } from '../dto/editClient.dto';
 import { ZipcodeService } from 'src/global/address/zipcode.service';
 import { AddressValidator } from 'src/global/address/address.validator';
 import { normalizeApiAddress } from 'src/global/utils/normalizeApiAddress.utils';
+import { zipcodeAddress } from 'src/global/utils/zipcodeAddress.utils';
 
 @Injectable()
 export class ClientService {
@@ -29,7 +30,7 @@ export class ClientService {
           email: { contains: filter.email, mode: 'insensitive' },
         }),
         ...(filter?.taxId && {
-          taxId: { contains: filter.taxId },
+          tax_id: { contains: filter.taxId },
         }),
       },
       ...(filter?.order && {
@@ -69,11 +70,7 @@ export class ClientService {
     const client = await this.prisma.client.create({
       data: {
         ...data,
-        zipcode: zipCode.cep,
-        address: zipCode.logradouro ?? data.address,
-        city: zipCode.localidade ?? data.city,
-        neighborhood: zipCode.bairro ?? data.neighborhood,
-        state: zipCode.uf ?? data.state,
+        ...zipcodeAddress(zipCode, data),
       },
     });
 
@@ -87,30 +84,34 @@ export class ClientService {
       throw new NotFoundException('Client not found');
     }
 
-    this.addressValidator.validate(
-      {
-        address: clientExists.address,
-        city: clientExists.city,
-        state: clientExists?.state,
-        neighborhood: clientExists?.neighborhood,
-      },
-      data,
-    );
+    const zipcode = data.zipcode?.replace(/-/g, '');
+    const zipcodeChanged = !!zipcode && zipcode !== clientExists.zipcode;
+    const addressSent = [
+      data.address,
+      data.neighborhood,
+      data.city,
+      data.state,
+    ].some((field) => field !== undefined);
 
-    const validatedData: EditClientDto = { ...data };
+    const validatedData: EditClientDto = { ...data, zipcode };
 
-    const bodyZipCode = data.zipcode && data.zipcode.replace(/-/g, '');
+    // O endereco enviado e conferido contra a base do CEP, nunca contra o que
+    // estava gravado: o gravado pertence ao CEP antigo. Com o mesmo CEP, o que o
+    // corpo nao traz continua o gravado; com CEP novo, o gravado nao vale mais.
+    if (zipcodeChanged || addressSent) {
+      const zipCode = await this.zipcodeService.getZipcode(
+        zipcode || clientExists.zipcode,
+      );
 
-    if (data.zipcode && bodyZipCode !== clientExists.zipcode) {
-      const zipCode = await this.zipcodeService.getZipcode(data.zipcode);
       this.addressValidator.validate(normalizeApiAddress(zipCode), data);
-      Object.assign(validatedData, {
-        zipcode: zipCode.cep,
-        address: zipCode.logradouro ?? data.address,
-        city: zipCode.localidade ?? data.city,
-        neighborhood: zipCode.bairro ?? data.neighborhood,
-        state: zipCode.uf ?? data.state,
-      });
+
+      Object.assign(
+        validatedData,
+        zipcodeAddress(
+          zipCode,
+          zipcodeChanged ? data : { ...clientExists, ...data },
+        ),
+      );
     }
 
     const client = await this.prisma.client.update({

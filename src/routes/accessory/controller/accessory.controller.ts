@@ -8,6 +8,7 @@ import {
   Param,
   Post,
   Put,
+  Query,
   UploadedFile,
   UseFilters,
   UseInterceptors,
@@ -30,7 +31,7 @@ export class AccessoryController {
 
   @Get()
   @HttpCode(HttpStatus.OK)
-  async findAll(filter: FilterAccessory): Promise<Accessory[]> {
+  async findAll(@Query() filter: FilterAccessory): Promise<Accessory[]> {
     return await this.accessoryService.findAll(filter);
   }
 

@@ -1,4 +1,11 @@
-import { IsArray, IsIn, IsNotEmpty, IsString } from 'class-validator';
+import { Type } from 'class-transformer';
+import {
+  IsArray,
+  IsIn,
+  IsNotEmpty,
+  IsString,
+  ValidateNested,
+} from 'class-validator';
 import { StatusEquipment } from 'generated/prisma/enums';
 
 class EquipmentStatusDto {
@@ -16,5 +23,8 @@ class EquipmentStatusDto {
 export class EquipmentsEditStatus {
   @IsArray()
   @IsNotEmpty()
+  // Sem os dois abaixo o item nao e validado, e qualquer status passava.
+  @ValidateNested({ each: true })
+  @Type(() => EquipmentStatusDto)
   equipments: EquipmentStatusDto[];
 }

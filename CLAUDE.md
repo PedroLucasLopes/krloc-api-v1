@@ -36,7 +36,8 @@ Porta padrão: `PORT` ou **3000**. Prefixo global: **`/api`**.
 
 ### Onde o navegador enxerga esta aplicação
 
-O front roda em **`http://localhost:5174`** e proxia `/api` para o container em `:3000`. Front e API
+O front é o [`plataforma_krloc-v1`](https://github.com/PedroLucasLopes/plataforma_krloc-v1), um repositório
+próprio. Ele roda em **`http://localhost:5174`** e proxia `/api` para o container em `:3000`. Front e API
 na mesma origem: sem CORS, e o `SameSite=Strict` dos cookies vale sem ressalva. Por isso
 `APP_BASE_URL` é o endereço do **front**, não o do container: é dele que sai a `redirect_uri`
 registrada no SSO.
@@ -125,8 +126,15 @@ Regras que `ELeaseService` (~1000 linhas) garante:
   equipamentos para `PENDING`, grava `LeaseItem` + `LeaseItemAccessory` e o `AuditLog`. O
   `updateMany` condicionado ao status é a trava contra reserva concorrente.
 - **Início** leva `PENDING → ACTIVE`; equipamentos vão para `LEASED`.
+- **Cancelamento** só em `PENDING` e com todo equipamento ainda `PENDING`: os equipamentos voltam a
+  `AVAILABLE`, fora do contrato, e os itens fecham.
+- **Volta** (`PUT /elease/status`) aceita equipamento `LEASED` ou `REPLACE` ligado ao **próprio**
+  contrato. `AVAILABLE` solta do contrato; `MAINTENANCE` e `STOLEN` continuam ligados e podem ganhar
+  substituto (`PUT /elease/replace`), que entra `REPLACE` e registra volta como qualquer outro.
 - **Fechamento** só passa se nenhum `LeaseItem` estiver sem `finishDate`/`finalStatus` ou marcado
-  `STOLEN`; caso contrário devolve 400 com a lista de pendências.
+  `STOLEN`; caso contrário devolve 400 com a lista de pendências. Ao fechar, o equipamento que ainda
+  aponta para o contrato (o que voltou para manutenção sem substituto) sai dele sem mudar de
+  situação, e o `AuditLog` registra quais.
 - Toda transição relevante grava `AuditLog`.
 
 Cálculo financeiro (`FinantialService`): faixas decrescentes 30 / 15 / 7 / 1 dias sobre
@@ -261,15 +269,30 @@ disso, e cada uma por uma razão técnica, não por conveniência:
    ao cliente.
 2. `DocumentService.generateFinantialReport`: `if (contract.leaseItems && !contract.leaseItems)` é
    sempre falso, então a validação de "sem movimentação no período" nunca dispara.
-3. `AccessoryController.findAll(filter)` está **sem `@Query()`** — o filtro chega `undefined`.
-4. `Content-Disposition` dos três documentos usa `filename="contrato.docx"` fixo no fallback ASCII,
+3. `Content-Disposition` dos três documentos usa `filename="contrato.docx"` fixo no fallback ASCII,
    inclusive para relatório e fechamento.
-5. `PaginationConfig`: `numberFormatter(1, 10, limit)` dá **piso 10** e **teto ilimitado**.
-6. `ELeaseService.findAll` filtra `lesseeId` com `contains`/`insensitive` sobre um UUID.
-7. `FileSizeValidationPipe`: a constante se chama `fiveMegabyte` mas vale 2 MB.
-8. `FormatService` lê o logo via `path.resolve(process.cwd(), ...)` em vez de `__dirname`, o que
+4. `PaginationConfig`: `numberFormatter(1, 10, limit)` dá **piso 10** e **teto ilimitado**.
+5. `ELeaseService.findAll` filtra `lesseeId` com `contains`/`insensitive` sobre um UUID.
+6. `FileSizeValidationPipe`: a constante se chama `fiveMegabyte` mas vale 2 MB.
+7. `FormatService` lê o logo via `path.resolve(process.cwd(), ...)` em vez de `__dirname`, o que
    obriga o Dockerfile a copiar o asset para fora de `dist/`.
-9. `start:prod` aponta para `node dist/main`, que não existe. O caminho certo é `dist/src/main`.
+8. `start:prod` aponta para `node dist/main`, que não existe. O caminho certo é `dist/src/main`.
+9. **Contrato com equipamento roubado não fecha.** `closeContract` recusa item `STOLEN`, a
+   substituição não fecha o item roubado e não há fluxo de indenização. O `FinantialService` conta
+   esse item até hoje, porque ele não tem `finishDate`.
+10. **`PUT /elease/remove/:id` não confere se o equipamento é do contrato.** Com o id de um
+    equipamento reservado em outro contrato responde 200: o `disconnect` não faz nada e o
+    `updateMany` devolve o equipamento a `AVAILABLE` ainda ligado ao outro contrato. A trava de "só
+    um equipamento" olha o total antes da remoção: tirar todos de uma vez deixa o contrato vazio.
+11. `LeaseItemAccessory` não guarda de qual equipamento veio. Adicionar equipamento a contrato não
+    fotografa os acessórios dele, e remover não tira.
+12. `EquipmentService.equipmentIsRented` só trava `LEASED`: equipamento `PENDING` (reservado) ou
+    `REPLACE` (substituto) pode ser editado, até de status, ou desativado com o contrato em curso.
+13. `FilterClientDTO.email` tem `@IsEmail()`: a busca por e-mail só aceita o endereço completo,
+    apesar do `contains` no service.
+14. `PrismaExceptionFilter` responde 500 a todo erro conhecido do Prisma que não seja `P2002`. É o
+    que chega quando um update condicionado ao status perde a corrida (start, cancel ou close
+    concorrentes) e quando `DELETE /client/:id` recebe um id que não existe.
 
 ### ✅ Já corrigidos
 
@@ -283,6 +306,24 @@ disso, e cada uma por uma razão técnica, não por conveniência:
 - **`logout` exigia permissão RBAC** por não estar marcado.
 - Dependências de runtime (`@prisma/*`, `@nestjs/mapped-types`) movidas para `dependencies`.
 - Pacote npm `crypto` removido: era um placeholder que sombreava o módulo nativo.
+- **`GET /accessory` ignorava filtro e página**: o controller estava sem `@Query()`.
+- **Filtro de cliente por `taxId`** montava `taxId` em vez da coluna `tax_id` e respondia 500.
+- **Endereço de cliente e obra**: `??` deixava a string vazia da base de CEP vencer o digitado, e a
+  edição conferia o endereço contra o gravado, o que recusava toda troca de CEP com a rua nova. Agora
+  a edição confere contra a base do CEP, novo ou atual, e só consulta a base quando o CEP muda ou
+  chega campo de endereço. Trocar para CEP sem logradouro sem mandar a rua é recusado com
+  `Address is required for this zipcode`.
+- **`DELETE /lessee` nunca apagava** (comparava array com `null`). Apaga obra sem contrato; com
+  qualquer contrato, até encerrado, recusa.
+- **`PUT /lessee` com `clientId`** comparava o id da obra com o do cliente e recusava sempre. O
+  cliente atual passa; só a troca de dono é recusada.
+- **Cancelar recusava todo contrato com equipamento.** Agora só recusa quando algum equipamento já
+  não está `PENDING`.
+- **Substituto não registrava volta**, e contrato com substituição nunca fechava. A volta aceita
+  `LEASED` e `REPLACE`, exige equipamento do próprio contrato e valida o status de cada item: sem
+  `@ValidateNested`, `LEASED` passava como volta e soltava o equipamento sem devolvê-lo.
+- **`closeContract` não soltava nada**: desconectava ids de `LeaseItem`, de uma lista que fica vazia
+  quando o fechamento passa. Agora solta o que ainda aponta para o contrato, sem mudar a situação.
 
 ---
 
@@ -292,6 +333,10 @@ disso, e cada uma por uma razão técnica, não por conveniência:
 - Transição de status acontece em `$transaction`, junto do `AuditLog`.
 - Equipamento só entra em contrato se `AVAILABLE`, com `updateMany` condicionado ao status.
 - `deleteEquipment` é **soft delete** (`RETIRED`).
+- Endereço de cliente e obra sai de `zipcodeAddress`: a base de CEP vence, o que ela deixa vazio vem
+  do corpo (`||`, nunca `??`), e a conferência é contra a base, nunca contra o endereço gravado.
+- Operação de contrato sobre equipamento confere o `eleaseId` do próprio contrato, não só o status.
+  O `remove` ainda não confere: ver o ponto de atenção 10.
 - Rota nova exige `Route` + `Permission` no SSO, senão responde 404.
 - O **refresh token** nunca chega ao navegador. O access token chega, e só por `GET /auth/token`
   (RFC 10017 §6.2.2.1). Os dois ficam no cookie de sessão, cifrado.
