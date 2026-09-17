@@ -5,11 +5,21 @@ type PaginationType = {
   limit: number;
 };
 
+/**
+ * Teto do `limit`. Sem ele, `?limit=1000000` devolve a tabela inteira numa
+ * resposta so: e varredura de dados e e negacao de servico pelo mesmo pedido.
+ * O piso continua 10, e 500 e o que o front pede nas consultas de apoio.
+ */
+export const MAX_LIMIT = 500;
+
 export const PaginationConfig = (
   paginationDto?: PaginationDTO,
 ): PaginationType => {
   const paginationRegister = numberFormatter(paginationDto?.page);
-  const paginationInterval = numberFormatter(1, 10, paginationDto?.limit);
+  const paginationInterval = Math.min(
+    numberFormatter(1, 10, paginationDto?.limit),
+    MAX_LIMIT,
+  );
 
   const limit = Number(paginationInterval) || 10;
   const page =

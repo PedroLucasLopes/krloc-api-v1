@@ -1,7 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { HttpModule } from '@nestjs/axios';
-import { APP_FILTER } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD } from '@nestjs/core';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { SsoClientModule } from '@pedrolucaslopes/sso-client';
 
 import { AppController } from './app.controller';
@@ -31,6 +32,19 @@ import { AccessoryModule } from './routes/accessory/accessory.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    /*
+     * Limite de requisicoes por origem, para disponibilidade: uma origem nao
+     * ocupa a API nem o banco sozinha. O teto e alto porque uma tela faz varias
+     * chamadas; a importacao de planilha, que le arquivo e grava em lote, tem
+     * limite proprio no controller.
+     *
+     * A contagem e por processo, em memoria, e o IP so e o de quem pediu com
+     * `TRUST_PROXY` ligado (ver `main.ts`): atras do nginx do front, sem isso,
+     * todo mundo conta como o proxy.
+     */
+    ThrottlerModule.forRoot({
+      throttlers: [{ name: 'default', ttl: 60_000, limit: 600 }],
+    }),
     SsoClientModule.forRootFromEnv(),
     HttpModule,
     PrismaModule,
@@ -45,6 +59,8 @@ import { AccessoryModule } from './routes/accessory/accessory.module';
   controllers: [AppController],
   providers: [
     AppService,
+    // Antes do guard do sso-client: enxurrada sem sessao para no limite.
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_FILTER, useClass: PrismaExceptionFilter },
   ],
 })

@@ -7,7 +7,8 @@ Do ponto de vista do ecossistema, é uma **Relying Party** do [SSO](https://gith
 usuário nem tela de login própria: toda a autenticação vem da biblioteca
 [`@pedrolucaslopes/sso-client`](https://github.com/PedroLucasLopes/sso-lib-v1/blob/main/CLAUDE.md).
 
-O `README.md` descreve a visão de produto. Este arquivo descreve **como o código está hoje**.
+O `README.md` descreve a visão de produto. Este arquivo descreve **como o código está hoje**. A
+revisão de segurança, com nota e vetor CVSS de cada achado, está em [`PENTEST.md`](PENTEST.md).
 
 ---
 
@@ -230,10 +231,12 @@ Modelo comentado em [`.env.example`](.env.example). Copie para `.env.docker` (co
 | `APP_PRIVATE_KEY_BASE64` | chave privada da aplicação, gerada pelo SSO |
 | `APP_BASE_URL` | base pública **vista pelo navegador**: o front. O callback é `${APP_BASE_URL}/auth/callback` |
 | `APP_POST_LOGIN_REDIRECT` | destino do login sem `returnTo`. `/` é a home do front |
+| `APP_LOGIN_ERROR_REDIRECT` | tela pública do front para login recusado: `/sign-in-error`. Sem ela, quem o SSO recusa, como conta sem papel no projeto, recebe JSON no callback |
 | `APP_COOKIE_PREFIX` | prefixo dos cookies: `krloc_session`. Único por app que divida host |
 | `COOKIE_SECRET` | 32 bytes hex que cifram os cookies **deste** app |
 | `COOKIE_SECURE` · `COOKIE_SAMESITE` | atributos dos cookies. `strict` é o padrão |
-| `ZIPCODE_API_URL` | ViaCEP |
+| `ZIPCODE_API_URL` | ViaCEP. O CEP é reduzido a oito dígitos antes de entrar na URL |
+| `TRUST_PROXY` | quantos saltos de proxy confiar no `X-Forwarded-For`. Sem ela, o limite de requisições conta todo mundo como o proxy do front |
 
 ### Por que duas destas ainda vêm do ambiente
 
@@ -258,7 +261,10 @@ disso, e cada uma por uma razão técnica, não por conveniência:
 - **DTOs**: `create<X>` · `edit<X>` = `PartialType(Create<X>)` · `filter<X>` estende `PaginationDTO`.
 - `findAll` lança `NotFoundException` com lista vazia (padrão do projeto).
 - Operações multi-tabela em `$transaction`.
-- Uploads: `FileInterceptor('file')` + `FileSizeValidationPipe` (2 MB) + `memoryStorage`.
+- Uploads: `FileInterceptor('file')` + `FileSizeValidationPipe` + `memoryStorage` com `limits`.
+  O teto de 2 MB vale no multer, **antes** de o arquivo ser lido inteiro na memória (o pipe sozinho só
+  recusava depois); o pipe confere extensão `.csv` e tipo declarado. Os valores moram em
+  `routes/file/file.constant.ts`.
 - ⚠️ O arquivo do filtro de validação se chama `prismacientvalidationerror.exception.ts` (typo herdado).
 
 ---
@@ -273,7 +279,7 @@ disso, e cada uma por uma razão técnica, não por conveniência:
    inclusive para relatório e fechamento.
 4. `PaginationConfig`: `numberFormatter(1, 10, limit)` dá **piso 10** e **teto ilimitado**.
 5. `ELeaseService.findAll` filtra `lesseeId` com `contains`/`insensitive` sobre um UUID.
-6. `FileSizeValidationPipe`: a constante se chama `fiveMegabyte` mas vale 2 MB.
+6. Limite de requisições por origem: 600/min geral e 30/min nas duas rotas de importação.
 7. `FormatService` lê o logo via `path.resolve(process.cwd(), ...)` em vez de `__dirname`, o que
    obriga o Dockerfile a copiar o asset para fora de `dist/`.
 8. `start:prod` aponta para `node dist/main`, que não existe. O caminho certo é `dist/src/main`.

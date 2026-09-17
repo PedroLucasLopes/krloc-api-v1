@@ -18,6 +18,7 @@ import { Accessory } from 'generated/prisma/client';
 import { FilterAccessory } from '../dto/filterAccessory.dto';
 import { PrismaExceptionValidationFilter } from 'src/global/error/prismacientvalidationerror.exception';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Throttle } from '@nestjs/throttler';
 import { FileSizeValidationPipe } from 'src/routes/file/service/fileValidation.service';
 import { CsvImport } from 'src/global/types/csvImport';
 import { EditAccessory } from '../dto/editAccessory.dto';
@@ -49,6 +50,9 @@ export class AccessoryController {
   }
 
   @Post('upload')
+  // Le o arquivo inteiro e grava em lote: e a rota mais cara da API, e a que
+  // mais rende a quem so quiser ocupa-la.
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @HttpCode(HttpStatus.CREATED)
   @UseInterceptors(FileInterceptor('file'))
   async importCsv(

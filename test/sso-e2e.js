@@ -331,15 +331,24 @@ const passouPeloRbac = async (res, method, caminho) =>
   check('o cookie leva prefixo desta aplicacao, nao um nome generico',
     COOKIE_SESSAO !== 'app_session' && (sessionCookies ?? '').startsWith(COOKIE_SESSAO),
     COOKIE_SESSAO);
+  const valorCookie = (sessionCookies ?? '').split(';')[0].split('=').slice(1).join('=');
+
+  /* O cookie e `iv.tag.texto cifrado`, tudo em base64url. Um JWT em claro
+   * comecaria um desses pedacos com `eyJ`, que e `{"` em base64.
+   *
+   * Procurar `eyJ` em QUALQUER posicao, como estava antes, falhava sozinho de
+   * vez em quando: em 1700 caracteres aleatorios, a chance de a sequencia
+   * aparecer por acaso passa de meio por cento. Teste que falha as vezes deixa
+   * de ser conferido. */
   check('nenhum token no cookie em claro',
-    !/eyJ/.test(sessionCookies ?? ''), 'conteudo cifrado');
+    valorCookie.split('.').every((pedaco) => !pedaco.startsWith('eyJ')),
+    'conteudo cifrado');
 
   // REGRESSAO. Navegador descarta cookie individual acima de 4096 bytes,
   // em silencio: sem erro, sem log, sem nada. O `fetch` deste teste NAO
   // aplica esse limite, entao ele passava enquanto nenhum navegador
   // conseguia logar. Aconteceu de verdade: a lista de permissoes dentro do
   // token levou o cookie a 4266 bytes.
-  const valorCookie = (sessionCookies ?? '').split(';')[0].split('=').slice(1).join('=');
   check('cookie de sessao cabe no limite de 4096 bytes do navegador',
     valorCookie.length < 4096, `${valorCookie.length} bytes`);
   check('cookie com folga de pelo menos 25%',
