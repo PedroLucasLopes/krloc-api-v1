@@ -267,7 +267,7 @@ export class ELeaseService {
 
           tx.equipment.updateMany({
             where: {
-              eleaseId: id,
+              eleaseId: { equals: id },
               status: StatusEquipment.PENDING,
             },
             data: { status: StatusEquipment.LEASED },
@@ -286,7 +286,7 @@ export class ELeaseService {
           }),
 
           tx.leaseItem.updateMany({
-            where: { contractId: id, startStatus: StatusEquipment.PENDING },
+            where: { contractId: { equals: id }, startStatus: StatusEquipment.PENDING },
             data: {
               startStatus: StatusEquipment.LEASED,
             },
@@ -347,7 +347,7 @@ export class ELeaseService {
         const [, updatedLease] = await Promise.all([
           tx.equipment.updateMany({
             where: {
-              eleaseId: id,
+              eleaseId: { equals: id },
               status: StatusEquipment.PENDING,
             },
             data: {
@@ -379,7 +379,7 @@ export class ELeaseService {
 
           tx.leaseItem.updateMany({
             where: {
-              contractId: id,
+              contractId: { equals: id },
               startStatus: StatusEquipment.PENDING,
             },
             data: {
@@ -571,7 +571,7 @@ export class ELeaseService {
 
             tx.leaseItem.deleteMany({
               where: {
-                contractId: id,
+                contractId: { equals: id },
                 equipmentId: { in: equipmentsId.equipments },
               },
             }),
@@ -645,7 +645,7 @@ export class ELeaseService {
     ];
     const outOnContract = {
       id: { in: equipments },
-      eleaseId: id,
+      eleaseId: { equals: id },
       status: { in: outStatus },
     };
 
@@ -690,7 +690,7 @@ export class ELeaseService {
 
           tx.leaseItem.updateMany({
             where: {
-              contractId: id,
+              contractId: { equals: id },
               equipmentId: { in: equipments },
               startStatus: { in: outStatus },
               finalStatus: null,
@@ -1018,7 +1018,7 @@ export class ELeaseService {
           }),
 
           tx.equipment.updateMany({
-            where: { eleaseId: id },
+            where: { eleaseId: { equals: id } },
             data: { eleaseId: null },
           }),
 
