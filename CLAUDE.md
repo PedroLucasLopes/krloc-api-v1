@@ -29,7 +29,7 @@ revisão de segurança, com nota e vetor CVSS de cada achado, está em [`PENTEST
 npm run start:dev
 npm run build
 npm run lint
-npm run test:sso        # ponta a ponta contra a stack de pé, 83 asserções
+npm run test:sso        # ponta a ponta contra a stack de pé, 91 asserções
 npx prisma migrate dev
 ```
 
@@ -192,8 +192,11 @@ projeto. Papel tem nome livre, como `ARQUITETO`; os quatro padrão nascem vazios
 
 Rota que existe aqui mas não está no catálogo do SSO, ou não está no papel de quem pediu, responde
 **404**, o mesmo corpo de um caminho que não existe (a partir do `@pedrolucaslopes/sso-client` 0.2.0).
-Permissão concedida vale na requisição seguinte, sem novo login; revogada, em até 60 segundos. Troca de
-papel e remoção do projeto valem quando o access token renova, em até 15 minutos.
+Permissão concedida vale na requisição seguinte, sem novo login; revogada, em até 30 segundos. Troca de
+papel, remoção do projeto, projeto suspenso e logout valem em até 30 segundos, sem novo login: o
+`sso-client` 0.4.0 pergunta ao SSO pela introspecção (RFC 7662) se o grant vale e qual é o papel de
+agora. Papel trocado já sai com token novo na mesma resposta; grant inativo derruba a sessão. A janela
+é `APP_GRANT_CHECK_SECONDS`, e `/api/auth/me` pergunta a cada chamada, que é como a tela descobre.
 
 O `test:sso` não depende do catálogo real: cria um papel próprio só com as rotas que usa, cadastra a
 rota que faltar e desfaz tudo no fim, inclusive quando quebra no meio.
@@ -237,6 +240,7 @@ Modelo comentado em [`.env.example`](.env.example). Copie para `.env.docker` (co
 | `COOKIE_SECURE` · `COOKIE_SAMESITE` | atributos dos cookies. `strict` é o padrão |
 | `ZIPCODE_API_URL` | ViaCEP. O CEP é reduzido a oito dígitos antes de entrar na URL |
 | `TRUST_PROXY` | quantos saltos de proxy confiar no `X-Forwarded-For`. Sem ela, o limite de requisições conta todo mundo como o proxy do front |
+| `APP_GRANT_CHECK_SECONDS` | opcional. De quanto em quanto tempo o guard pergunta ao SSO se o grant de um token vale. Padrão 30 |
 
 ### Por que duas destas ainda vêm do ambiente
 
@@ -309,6 +313,9 @@ disso, e cada uma por uma razão técnica, não por conveniência:
 - **`SsoAuthGuard`** que chamava `res.redirect()` e retornava `false`, causando "Cannot set headers
   after they are sent", deixou de existir.
 - **Logout** era cosmético; agora revoga no SSO (RFC 7009).
+- **Mudança feita no console do SSO levava até 15 minutos para valer aqui**, o tempo do access token.
+  Papel trocado, pessoa tirada do projeto e logout agora valem em até 30 segundos, pela introspecção
+  do `sso-client` 0.4.0, e o `test:sso` cobre a troca de papel nos dois sentidos.
 - **`logout` exigia permissão RBAC** por não estar marcado.
 - Dependências de runtime (`@prisma/*`, `@nestjs/mapped-types`) movidas para `dependencies`.
 - Pacote npm `crypto` removido: era um placeholder que sombreava o módulo nativo.

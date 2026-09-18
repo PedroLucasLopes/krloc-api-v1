@@ -120,14 +120,14 @@ const db = new Client({ connectionString: SSO_DB });
 /* O que a rodada criou no SSO e precisa sair no fim, por id e e-mail exatos. A
  * limpeza roda tambem quando a rodada quebra no meio: sem isso, um erro deixaria
  * o operador de teste com o papel raiz do SSO. */
-const rodada = { emails: [OPERADOR], papelId: null, rotas: [] };
+const rodada = { emails: [OPERADOR], papelId: null, papelVazioId: null, rotas: [] };
 
 async function limparRodada() {
   const usuarios = await purgeTestUsers(db, rodada.emails);
 
-  if (rodada.papelId) {
-    await db.query('DELETE FROM "Permission" WHERE "roleId" = $1', [rodada.papelId]);
-    await db.query('DELETE FROM "Role" WHERE id = $1', [rodada.papelId]);
+  for (const id of [rodada.papelId, rodada.papelVazioId].filter(Boolean)) {
+    await db.query('DELETE FROM "Permission" WHERE "roleId" = $1', [id]);
+    await db.query('DELETE FROM "Role" WHERE id = $1', [id]);
   }
 
   if (rodada.rotas.length) {
@@ -441,6 +441,59 @@ const passouPeloRbac = async (res, method, caminho) =>
   check('permissao concedida no SSO vale na requisicao seguinte, sem novo login',
     await passouPeloRbac(recemConcedida, 'GET', `/accessory/${ZERO}`), `HTTP ${recemConcedida.status}`);
 
+  console.log('\n=== papel trocado no SSO chega sem novo login (introspeccao, RFC 7662) ===');
+
+  /* O token desta sessao saiu com o papel da rodada. Trocado o papel no SSO, a
+   * aplicacao descobre na pergunta seguinte, pede um token novo sozinha e ja
+   * decide pelo papel novo. Antes, isso esperava o token vencer, em ate 15
+   * minutos, ou um novo login. */
+  // Um papel sem rota nenhuma, desta rodada: os padrao do projeto real podem ter
+  // permissao marcada no console.
+  const PAPEL_VAZIO = `E2E_VAZIO_${tag.toUpperCase()}`;
+  const papelVazio = await ssoApi('POST', '/role', { projectId: project.id, name: PAPEL_VAZIO });
+  rodada.papelVazioId = papelVazio.json?.id ?? null;
+  const trocou = await ssoApi('PUT', `/projectuser/${project.id}/${user.id}`, { roleId: papelVazio.json?.id });
+  check(`papel da pessoa trocado no SSO para ${PAPEL_VAZIO}, que nao alcanca nada`,
+    trocou.status === 200, `HTTP ${trocou.status}`);
+
+  const meDepoisDaTroca = await get(`${APP}/auth/me`, appCookie);
+  const identidadeTrocada = meDepoisDaTroca.ok ? await meDepoisDaTroca.json() : null;
+  check('GET /auth/me ja traz o papel novo, sem novo login',
+    JSON.stringify(identidadeTrocada?.roles) === JSON.stringify([PAPEL_VAZIO])
+      && identidadeTrocada?.permissions?.length === 0,
+    `${JSON.stringify(identidadeTrocada?.roles)} com ${identidadeTrocada?.permissions?.length} permissao(oes)`);
+
+  const cookieRenovado = readCookies(meDepoisDaTroca);
+  check('a aplicacao pediu um token novo ao SSO e o devolveu na mesma resposta',
+    cookieRenovado.includes(COOKIE_SESSAO), cookieRenovado ? 'cookie de sessao novo' : 'sem Set-Cookie');
+  appCookie = cookieRenovado || appCookie;
+
+  const equipmentAposTroca = await get(`${APP}/equipment`, appCookie);
+  check('o papel novo ja decide: a rota que o antigo alcancava responde 404',
+    await negadoPeloGuard(equipmentAposTroca, 'GET', '/equipment'), `HTTP ${equipmentAposTroca.status}`);
+
+  const bearerAposTroca = await fetch(`${APP}/equipment`, { headers: bearer });
+  check('pelo Bearer emitido antes da troca tambem vale o papel de agora',
+    await negadoPeloGuard(bearerAposTroca, 'GET', '/equipment'), `HTTP ${bearerAposTroca.status}`);
+
+  // Devolve o papel da rodada: o resto da suite conta com ele.
+  await ssoApi('PUT', `/projectuser/${project.id}/${user.id}`, { roleId: papel.json.id });
+  const meDeVolta = await get(`${APP}/auth/me`, appCookie);
+  const identidadeDeVolta = meDeVolta.ok ? await meDeVolta.json() : null;
+  appCookie = readCookies(meDeVolta) || appCookie;
+  check('devolvido o papel, a sessao volta a alcancar o que ele concede, ainda sem novo login',
+    JSON.stringify(identidadeDeVolta?.roles) === JSON.stringify([PAPEL]), JSON.stringify(identidadeDeVolta?.roles));
+
+  /* Quem usa Bearer nao tem refresh token: o token que ele segura continua com o
+   * estado que o SSO deu na ultima pergunta, por ate `grantCheckSeconds`. O
+   * caminho dele e pegar outro em GET /auth/token, que pergunta ao SSO na hora. */
+  const tokenDeVolta = await get(`${APP}/auth/token`, appCookie);
+  const grantDeVolta = tokenDeVolta.ok ? await tokenDeVolta.json() : null;
+  appCookie = readCookies(tokenDeVolta) || appCookie;
+  bearer.Authorization = `Bearer ${grantDeVolta?.access_token}`;
+  check('GET /auth/token entrega um token com o papel de agora', !!grantDeVolta?.access_token,
+    `HTTP ${tokenDeVolta.status}`);
+
   console.log('\n=== o guard hidrata o Authorization a partir da sessao ===');
   const homeCookie = await get(`${APP}/home`, appCookie);
   const sessaoCookie = homeCookie.ok ? await homeCookie.json() : null;
@@ -499,7 +552,9 @@ const passouPeloRbac = async (res, method, caminho) =>
   check('POST com cookie MAIS o header passa pelo guard',
     await passouPeloRbac(comToken, 'POST', '/equipment'), `HTTP ${comToken.status}`);
 
-  const soBearer = await escrever({ authorization: `Bearer ${grant.access_token}` });
+  // O Bearer atual: o primeiro guarda, por ate 30 segundos, o papel vazio que o
+  // SSO respondeu na troca de papel acima.
+  const soBearer = await escrever({ authorization: bearer.Authorization });
   check('Bearer dispensa o token anti-CSRF: o navegador nunca o anexa sozinho',
     await passouPeloRbac(soBearer, 'POST', '/equipment'), `HTTP ${soBearer.status}`);
 
@@ -708,6 +763,14 @@ const passouPeloRbac = async (res, method, caminho) =>
     (c) => c.startsWith(COOKIE_SESSAO) && /Expires=Thu, 01 Jan 1970|Max-Age=0/i.test(c),
   );
   check('logout instrui o navegador a apagar o cookie', clearsCookie);
+
+  /* Antes da introspeccao, uma copia do cookie guardada antes do logout seguia
+   * abrindo a API ate o access token vencer: o logout revogava o refresh token,
+   * mas o access token continuava assinado e valido por ate 15 minutos. Agora o
+   * SSO responde que o grant nao tem mais refresh token vivo, e a sessao cai. */
+  const copiaDoCookie = await get(`${APP}/auth/me`, appCookie);
+  check('uma copia do cookie de antes do logout deixa de abrir a API na hora',
+    copiaDoCookie.status === 401, `HTTP ${copiaDoCookie.status}`);
 
   /* O projeto KRLoc e real e fica. Saem o usuario da rodada, o operador de
    * teste, o papel desta rodada e as rotas que so ela precisou cadastrar, para
