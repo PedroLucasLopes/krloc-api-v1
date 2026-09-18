@@ -1,14 +1,10 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotAcceptableException,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { Response } from 'express';
 import { LeaseStatus } from 'generated/prisma/client';
 import { PrismaService } from 'src/global/prisma/prisma.service';
 import { FinantialReportDto } from '../dto/finantialReport.dto';
 import { FormatService } from './format.service';
+import { ApiException } from 'src/global/error/apiError';
 
 @Injectable()
 export class DocumentService {
@@ -31,7 +27,7 @@ export class DocumentService {
     });
 
     if (!contract) {
-      throw new NotAcceptableException('Contract not found');
+      throw new ApiException('contract_not_found');
     }
 
     const buffer = await this.file.contract(contract);
@@ -94,13 +90,11 @@ export class DocumentService {
     });
 
     if (!contract) {
-      throw new NotFoundException('Contract not found');
+      throw new ApiException('contract_not_found');
     }
 
     if (contract.leaseItems && !contract.leaseItems) {
-      throw new BadRequestException(
-        'No equipment activity found for this period',
-      );
+      throw new ApiException('no_activity_in_period');
     }
 
     const buffer = await this.file.finantialReport(contract);
@@ -135,7 +129,7 @@ export class DocumentService {
     });
 
     if (!contract) {
-      throw new NotFoundException('contract not found');
+      throw new ApiException('contract_not_found');
     }
 
     const buffer = await this.file.contractClosure(contract);

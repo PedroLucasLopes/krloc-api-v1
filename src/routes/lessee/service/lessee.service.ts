@@ -1,8 +1,4 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { PrismaService } from 'src/global/prisma/prisma.service';
 import { FilterLesseeDTO } from '../dto/filterLessee.dto';
 import { Client, Lessee } from 'generated/prisma/client';
@@ -13,6 +9,7 @@ import { ZipcodeService } from 'src/global/address/zipcode.service';
 import { AddressValidator } from 'src/global/address/address.validator';
 import { normalizeApiAddress } from 'src/global/utils/normalizeApiAddress.utils';
 import { zipcodeAddress } from 'src/global/utils/zipcodeAddress.utils';
+import { ApiException } from 'src/global/error/apiError';
 
 @Injectable()
 export class LesseeService {
@@ -47,7 +44,7 @@ export class LesseeService {
     });
 
     if (lessees.length === 0) {
-      throw new NotFoundException('No lessees found');
+      throw new ApiException('no_results');
     }
 
     return lessees;
@@ -60,7 +57,7 @@ export class LesseeService {
     });
 
     if (!lessee) {
-      throw new NotFoundException('This lessee does not exist');
+      throw new ApiException('lessee_not_found');
     }
 
     return lessee;
@@ -73,11 +70,11 @@ export class LesseeService {
     });
 
     if (!client) {
-      throw new NotFoundException('This client does not exist');
+      throw new ApiException('client_not_found');
     }
 
     if (client?.lessees.length === 0) {
-      throw new NotFoundException(`${client.name} does not have any lessees`);
+      throw new ApiException('no_results');
     }
 
     return client;
@@ -89,7 +86,7 @@ export class LesseeService {
     });
 
     if (!clientIdExists) {
-      throw new BadRequestException('This client does not exist!');
+      throw new ApiException('client_not_found');
     }
 
     const zipCode = await this.zipcodeService.getZipcode(data.zipcode);
@@ -113,7 +110,7 @@ export class LesseeService {
     });
 
     if (!lesseeExists) {
-      throw new BadRequestException('This lessee does not exist!');
+      throw new ApiException('lessee_not_found');
     }
 
     if (data.clientId) {
@@ -122,12 +119,12 @@ export class LesseeService {
       });
 
       if (!clientExists) {
-        throw new NotFoundException('Client Not Found!');
+        throw new ApiException('client_not_found');
       }
 
       // Mandar o cliente atual e aceito; so a troca de dono e recusada.
       if (clientExists.id !== lesseeExists.clientId) {
-        throw new BadRequestException('Lessee cant change of owner');
+        throw new ApiException('lessee_owner_change');
       }
     }
 
@@ -176,12 +173,12 @@ export class LesseeService {
     });
 
     if (!lessee) {
-      throw new NotFoundException('This lessee does not exist');
+      throw new ApiException('lessee_not_found');
     }
 
     // Contrato encerrado tambem conta: o historico dele aponta para a obra.
     if (lessee._count.eleases > 0) {
-      throw new BadRequestException('This lessee have an ongoing contract');
+      throw new ApiException('lessee_has_contracts');
     }
 
     await this.prisma.lessee.delete({ where: { id } });

@@ -29,7 +29,8 @@ revisão de segurança, com nota e vetor CVSS de cada achado, está em [`PENTEST
 npm run start:dev
 npm run build
 npm run lint
-npm run test:sso        # ponta a ponta contra a stack de pé, 91 asserções
+npm run test:sso        # ponta a ponta contra a stack de pé, 94 asserções
+npx jest                # unidade: contrato de erro, validação por campo e filtros do Prisma
 npx prisma migrate dev
 ```
 
@@ -70,7 +71,7 @@ ordem de subida; o SSO só precisa estar de pé quando alguém for logar.
 ├─ 🧩 global/
 │  ├─ address/        # ZipcodeService (ViaCEP) + AddressValidator
 │  ├─ dto/            # PaginationDTO, Health
-│  ├─ error/          # ExceptionFilters do Prisma
+│  ├─ error/          # contrato de erro (apiError.ts), recusa da validação e filtros do Prisma
 │  ├─ interceptors/   # PerformanceInterceptor
 │  ├─ prisma/  types/  utils/  validators/
 └─ 🔐 routes/
@@ -263,13 +264,52 @@ disso, e cada uma por uma razão técnica, não por conveniência:
 
 - **Controller** só orquestra; regra de negócio no service.
 - **DTOs**: `create<X>` · `edit<X>` = `PartialType(Create<X>)` · `filter<X>` estende `PaginationDTO`.
-- `findAll` lança `NotFoundException` com lista vazia (padrão do projeto).
+- `findAll` lança `ApiException('no_results')` com lista vazia (padrão do projeto; o front a trata
+  como lista vazia).
+- **Erro é código do catálogo**, `throw new ApiException('<codigo>')`, nunca frase solta em exception
+  do Nest. Ver "Contrato de erro".
 - Operações multi-tabela em `$transaction`.
 - Uploads: `FileInterceptor('file')` + `FileSizeValidationPipe` + `memoryStorage` com `limits`.
   O teto de 2 MB vale no multer, **antes** de o arquivo ser lido inteiro na memória (o pipe sozinho só
   recusava depois); o pipe confere extensão `.csv` e tipo declarado. Os valores moram em
   `routes/file/file.constant.ts`.
 - ⚠️ O arquivo do filtro de validação se chama `prismacientvalidationerror.exception.ts` (typo herdado).
+
+---
+
+## 🚫 Contrato de erro
+
+Todo erro da aplicação sai com o código no campo `error`:
+
+```json
+{ "statusCode": 404, "error": "equipment_not_found", "message": "Equipment not found" }
+```
+
+- **O código é o contrato; o texto é do front.** O `plataforma_krloc-v1` escolhe a frase pelo código,
+  na língua da tela, e **nunca mostra `message`**. Ele é para quem lê a resposta crua, como o `detail`
+  da RFC 9457 §3.1.4, e não carrega valor da requisição nem detalhe interno.
+- **O catálogo é `global/error/apiError.ts`**: código, status e texto de desenvolvedor, num lugar só.
+  Código novo entra ali, no `constants/messages.ts` do front e nos JSON de tradução dele. Renomear ou
+  tirar um quebra o front, que passa a mostrar a mensagem genérica do status.
+- **Valor que a tela precisa vai num membro próprio**, nunca no texto (RFC 9457 §3.2): `status` em
+  `contract_in_state`, `from` e `to` em `replace_type_mismatch`, `equipment` em `replace_same_unit`,
+  `value` em `address_mismatch` e `equipments` em `contract_items_out`, só com código e sufixo.
+- **Validação de DTO** sai `validation_failed`, com `fields: [{ field, error, message }]`. O código do
+  campo vem do `context` da regra, como `@Matches(..., { context: { code: 'phone_invalid' } })`; regra sem
+  código sai `invalid_value`, e o front mostra a recusa genérica.
+- **Erro do Prisma** vira `duplicate` (409), `validation_failed` (400) ou `internal_error` (500). A mensagem
+  dele traz a consulta, com nomes do schema e valores gravados, e fica no log: do erro conhecido, só o
+  código e o alvo. Os dois filtros são globais, em `app.module.ts`.
+- **O que o framework responde sozinho fica como o Nest escreve**: o 404 de caminho que não existe, que
+  o `sso-client` imita para rota negada, o 413 do upload e o 429 do limite de requisições. O front os
+  reconhece pelo status.
+- **O `sso-client` usa o mesmo campo**, a partir da 0.5.0, para `csrf_token_invalid`,
+  `origin_not_allowed`, `invalid_token` e `login_required`.
+
+Com o catálogo, o status passou a acompanhar o código. Mudaram: `client_has_lessees`, de 404 para 409;
+o contrato que não existe na geração de documento, de 406 para 404; cliente ou obra que não existe,
+referidos no corpo, de 400 para 404; contrato que não está pendente, ao pôr ou tirar equipamento, de
+404 para 400; e o arquivo ausente, de 404 para 400, como o pipe do upload já respondia.
 
 ---
 
@@ -300,12 +340,17 @@ disso, e cada uma por uma razão técnica, não por conveniência:
     `REPLACE` (substituto) pode ser editado, até de status, ou desativado com o contrato em curso.
 13. `FilterClientDTO.email` tem `@IsEmail()`: a busca por e-mail só aceita o endereço completo,
     apesar do `contains` no service.
-14. `PrismaExceptionFilter` responde 500 a todo erro conhecido do Prisma que não seja `P2002`. É o
-    que chega quando um update condicionado ao status perde a corrida (start, cancel ou close
-    concorrentes) e quando `DELETE /client/:id` recebe um id que não existe.
+14. `PrismaExceptionFilter` responde 500 `internal_error` a todo erro conhecido do Prisma que não seja
+    `P2002`. É o que chega quando um update condicionado ao status perde a corrida (start, cancel ou
+    close concorrentes) e quando `DELETE /client/:id` recebe um id que não existe.
 
 ### ✅ Já corrigidos
 
+- **O front reconhecia o erro pela frase.** Eram 55 textos exatos e 6 expressões regulares, e o texto
+  desconhecido aparecia cru na tela. Agora todo erro sai com código (ver "Contrato de erro") e o front
+  nunca mostra `message`. O filtro de validação do Prisma, que devolvia ao cliente a última linha da
+  mensagem interna (``Argument `name` is missing.``), passou a responder `validation_failed` e a deixar o
+  texto no log. Ver `PENTEST.md`, KR-10.
 - **Bypass de autorização**: o guard antigo montava `new RegExp(req.path)` e testava a permissão
   contra ela. Um pedido a `/api/.*` casava com qualquer permissão. Há teste de regressão.
 - **Segredo simétrico** trocado por verificação contra o JWKS do SSO.
@@ -343,6 +388,8 @@ disso, e cada uma por uma razão técnica, não por conveniência:
 ## ✅ Invariantes ao alterar
 
 - Preço de contrato **nunca** vem do `Equipment`: use o snapshot em `LeaseItem`.
+- Erro sai com código do catálogo `global/error/apiError.ts`. `message` não leva valor da requisição nem
+  detalhe interno; valor que a tela mostra vai em membro próprio.
 - Transição de status acontece em `$transaction`, junto do `AuditLog`.
 - Equipamento só entra em contrato se `AVAILABLE`, com `updateMany` condicionado ao status.
 - `deleteEquipment` é **soft delete** (`RETIRED`).

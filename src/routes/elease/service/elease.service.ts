@@ -1,10 +1,4 @@
-import {
-  BadRequestException,
-  HttpStatus,
-  Injectable,
-  InternalServerErrorException,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import {
   AuditAction,
   ELease,
@@ -22,6 +16,7 @@ import { EquipmentsEditStatus } from '../dto/equipmentsEditStatus.dto';
 import { ReplaceEquipmentDto } from '../dto/replaceEquipment.dto';
 import { LeaseItemAccessoryData } from '../types/leaseItemAccessoryData';
 import { EquipmentWithAccessories } from '../types/equipmentWithAccessories';
+import { ApiException } from 'src/global/error/apiError';
 
 @Injectable()
 export class ELeaseService {
@@ -69,7 +64,7 @@ export class ELeaseService {
     });
 
     if (elease.length === 0) {
-      throw new NotFoundException('No equipment leases Found');
+      throw new ApiException('no_results');
     }
 
     return elease;
@@ -88,7 +83,7 @@ export class ELeaseService {
     });
 
     if (!foundELease) {
-      throw new NotFoundException('This contract does not exist');
+      throw new ApiException('contract_not_found');
     }
 
     return foundELease;
@@ -120,11 +115,11 @@ export class ELeaseService {
     });
 
     if (!checkLesseeId) {
-      throw new NotFoundException('This lessee do not exist');
+      throw new ApiException('lessee_not_found');
     }
 
     if (equipmentsFound.length < equipments.length) {
-      throw new BadRequestException('Some equipments are not available');
+      throw new ApiException('equipment_unavailable');
     }
 
     const buildAccessoryData = (
@@ -162,9 +157,7 @@ export class ELeaseService {
           });
 
           if (updated.count !== equipments.length) {
-            throw new BadRequestException(
-              'Some equipments were already reserved',
-            );
+            throw new ApiException('equipment_reserved');
           }
 
           await tx.auditLog.create({
@@ -212,7 +205,7 @@ export class ELeaseService {
     );
 
     if (!createLease) {
-      throw new InternalServerErrorException('Something went wrong!');
+      throw new ApiException('internal_error');
     }
 
     return createLease;
@@ -240,23 +233,19 @@ export class ELeaseService {
         });
 
         if (!lease) {
-          throw new NotFoundException('Contract not found');
+          throw new ApiException('contract_not_found');
         }
 
         if (lease.status !== LeaseStatus.PENDING) {
-          throw new BadRequestException(`This contract is ${lease.status}`);
+          throw new ApiException('contract_in_state', { status: lease.status });
         }
 
         if (lease.equipments.length > 0) {
-          throw new BadRequestException(
-            'There are equipments associated with this contract that are not PENDING',
-          );
+          throw new ApiException('contract_equipment_not_reserved');
         }
 
         if (lease.contract_generated === null) {
-          throw new BadRequestException(
-            'Please generate the equipment lease contract before starting.',
-          );
+          throw new ApiException('contract_document_missing');
         }
 
         const [start, ,] = await Promise.all([
@@ -286,7 +275,10 @@ export class ELeaseService {
           }),
 
           tx.leaseItem.updateMany({
-            where: { contractId: { equals: id }, startStatus: StatusEquipment.PENDING },
+            where: {
+              contractId: { equals: id },
+              startStatus: StatusEquipment.PENDING,
+            },
             data: {
               startStatus: StatusEquipment.LEASED,
             },
@@ -298,7 +290,7 @@ export class ELeaseService {
     );
 
     if (!startContract) {
-      throw new InternalServerErrorException('Something went wrong!');
+      throw new ApiException('internal_error');
     }
 
     return startContract;
@@ -325,21 +317,19 @@ export class ELeaseService {
         });
 
         if (!checkContract) {
-          throw new NotFoundException('Contract not found');
+          throw new ApiException('contract_not_found');
         }
 
         if (checkContract.status !== LeaseStatus.PENDING) {
-          throw new BadRequestException(
-            `This contract is ${checkContract.status}`,
-          );
+          throw new ApiException('contract_in_state', {
+            status: checkContract.status,
+          });
         }
 
         // Cancelar desfaz reservas. Equipamento do contrato que ja nao esta
         // PENDING mudou de situacao por fora, e nao volta a AVAILABLE sozinho.
         if (checkContract.equipments.length > 0) {
-          throw new BadRequestException(
-            'There are equipments associated with this contract that are not PENDING',
-          );
+          throw new ApiException('contract_equipment_not_reserved');
         }
 
         const cancelledAt = new Date();
@@ -417,7 +407,7 @@ export class ELeaseService {
         });
 
         if (!checkContract) {
-          throw new NotFoundException('Equipment Lease not Found');
+          throw new ApiException('contract_not_pending');
         }
 
         const equipmentsFound = await tx.equipment.findMany({
@@ -428,7 +418,7 @@ export class ELeaseService {
         });
 
         if (equipmentsId.equipments.length > equipmentsFound.length) {
-          throw new BadRequestException('Some equipments are not found');
+          throw new ApiException('equipment_unavailable');
         }
 
         if (equipmentsFound && checkContract) {
@@ -486,7 +476,7 @@ export class ELeaseService {
     );
 
     if (!addEquipments) {
-      throw new InternalServerErrorException('Something went wrong!');
+      throw new ApiException('internal_error');
     }
 
     return addEquipments;
@@ -512,17 +502,15 @@ export class ELeaseService {
         });
 
         if (!contractExist) {
-          throw new NotFoundException('Equipment Lease not Found');
+          throw new ApiException('contract_not_pending');
         }
 
         if (contractExist.status === LeaseStatus.ACTIVE) {
-          throw new BadRequestException('The contract is already Active');
+          throw new ApiException('contract_not_pending');
         }
 
         if (contractExist.equipments.length === 1) {
-          throw new BadRequestException(
-            'You have only one equipment in your contract',
-          );
+          throw new ApiException('contract_last_equipment');
         }
 
         const equipmentsFound = await tx.equipment.findMany({
@@ -533,7 +521,7 @@ export class ELeaseService {
         });
 
         if (equipmentsId.equipments.length > equipmentsFound.length) {
-          throw new BadRequestException('Some equipments are not available');
+          throw new ApiException('equipment_unavailable');
         }
 
         if (equipmentsFound && contractExist) {
@@ -583,7 +571,7 @@ export class ELeaseService {
     );
 
     if (!removeEquipments) {
-      throw new InternalServerErrorException('Something went wrong!');
+      throw new ApiException('internal_error');
     }
 
     return removeEquipments;
@@ -634,7 +622,7 @@ export class ELeaseService {
     });
 
     if (!contractExist) {
-      throw new NotFoundException('Contract not found');
+      throw new ApiException('contract_not_found');
     }
 
     // Registra volta o que esta na obra por ESTE contrato: o que saiu locado e o
@@ -654,9 +642,7 @@ export class ELeaseService {
     });
 
     if (equipmentsFound.length < equipments.length) {
-      throw new BadRequestException(
-        'Some equipments are not available to change',
-      );
+      throw new ApiException('equipment_not_leased');
     }
 
     const keepELeaseId: StatusEquipment[] = [
@@ -704,9 +690,7 @@ export class ELeaseService {
 
         // Outra volta do mesmo equipamento chegou antes desta.
         if (updated.count !== equipments.length) {
-          throw new BadRequestException(
-            'Some equipments are not available to change',
-          );
+          throw new ApiException('equipment_not_leased');
         }
 
         return equipmentsFound.map((equipment) => ({
@@ -732,7 +716,7 @@ export class ELeaseService {
     });
 
     if (!contract) {
-      throw new NotFoundException('Active contract not found');
+      throw new ApiException('contract_not_active');
     }
 
     const oldIds = replacements.map((r) => r.oldEquipmentId);
@@ -746,7 +730,7 @@ export class ELeaseService {
       uniqueOldIds.size !== oldIds.length ||
       uniqueNewIds.size !== newIds.length
     ) {
-      throw new BadRequestException('Duplicate equipment ids in replacements');
+      throw new ApiException('replace_duplicate');
     }
 
     // 3. Busca todos os leaseItems relevantes de uma vez
@@ -761,9 +745,7 @@ export class ELeaseService {
     });
 
     if (oldLeaseItems.length !== replacements.length) {
-      throw new BadRequestException(
-        'One or more equipments were not found as MAINTENANCE or STOLEN items in this contract',
-      );
+      throw new ApiException('replace_old_state');
     }
 
     // 4. Busca todos os equipamentos antigos e novos de uma vez
@@ -800,15 +782,11 @@ export class ELeaseService {
     ]);
 
     if (oldEquipments.length !== replacements.length) {
-      throw new BadRequestException(
-        'One or more old equipments are not in MAINTENANCE or STOLEN status',
-      );
+      throw new ApiException('replace_old_state');
     }
 
     if (newEquipments.length !== replacements.length) {
-      throw new BadRequestException(
-        'One or more new equipments are not available',
-      );
+      throw new ApiException('replace_new_unavailable');
     }
 
     // 5. Monta mapas para lookup O(1) e valida compatibilidade par a par
@@ -823,27 +801,26 @@ export class ELeaseService {
       const newEq = newEquipmentMap.get(newEquipmentId);
 
       if (!oldEq || !newEq) {
-        throw new BadRequestException(
-          `Could not resolve equipment pair: ${oldEquipmentId} → ${newEquipmentId}`,
-        );
+        throw new ApiException('replace_pair');
       }
 
       if (newEq.code !== oldEq.code) {
-        throw new BadRequestException(
-          `Equipment type mismatch: cannot replace ${oldEq.code}-${oldEq.suffix} with ${newEq.code}-${newEq.suffix}`,
-        );
+        throw new ApiException('replace_type_mismatch', {
+          from: `${oldEq.code}-${oldEq.suffix}`,
+          to: `${newEq.code}-${newEq.suffix}`,
+        });
       }
 
       if (newEq.suffix === oldEq.suffix) {
-        throw new BadRequestException(
-          `New equipment ${newEq.code}-${newEq.suffix} must have a different suffix from the old one`,
-        );
+        throw new ApiException('replace_same_unit', {
+          equipment: `${newEq.code}-${newEq.suffix}`,
+        });
       }
 
       if (
         newEq.equipmentAccessories.length !== oldEq.equipmentAccessories.length
       ) {
-        throw new BadRequestException('Some accessories are missing');
+        throw new ApiException('replace_accessories');
       }
     }
 
@@ -954,7 +931,7 @@ export class ELeaseService {
     );
 
     if (!updatedLease) {
-      throw new InternalServerErrorException('Something went wrong');
+      throw new ApiException('internal_error');
     }
 
     return updatedLease;
@@ -987,14 +964,17 @@ export class ELeaseService {
         });
 
         if (!findContract) {
-          throw new NotFoundException('Contract not found');
+          throw new ApiException('contract_not_found');
         }
 
         if (findContract.leaseItems.length > 0) {
-          throw new BadRequestException({
-            message: 'Some equipment has not yet been returned',
-            statusCode: HttpStatus.BAD_REQUEST,
-            equipments: findContract.leaseItems,
+          throw new ApiException('contract_items_out', {
+            equipments: findContract.leaseItems.map(
+              ({ equipmentCode, equipmentSuffix }) => ({
+                equipmentCode,
+                equipmentSuffix,
+              }),
+            ),
           });
         }
 
@@ -1043,7 +1023,7 @@ export class ELeaseService {
     );
 
     if (!closeContract) {
-      throw new InternalServerErrorException('Something went wrong');
+      throw new ApiException('internal_error');
     }
 
     return closeContract;

@@ -1,4 +1,4 @@
-import { HttpStatus, Injectable, NotFoundException } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { Equipment, StatusEquipment } from 'generated/prisma/client';
 import { PrismaService } from 'src/global/prisma/prisma.service';
 import { validateCode } from '../utils/validateCode.utils';
@@ -10,6 +10,7 @@ import csv from 'csv-parser';
 import { Readable } from 'stream';
 import { CsvImport } from 'src/global/types/csvImport';
 import { parseStatus } from '../utils/parseStatus.utils';
+import { ApiException } from 'src/global/error/apiError';
 
 @Injectable()
 export class EquipmentService {
@@ -48,7 +49,7 @@ export class EquipmentService {
     });
 
     if (equipments.length === 0) {
-      throw new NotFoundException('No equipment found');
+      throw new ApiException('no_results');
     }
 
     return equipments;
@@ -73,7 +74,7 @@ export class EquipmentService {
     });
 
     if (!equipment) {
-      throw new NotFoundException('This equipment does not exist');
+      throw new ApiException('equipment_not_found');
     }
 
     return equipment;
@@ -95,7 +96,7 @@ export class EquipmentService {
 
   async importCsv(file: Express.Multer.File): Promise<CsvImport> {
     if (!file) {
-      throw new NotFoundException('No file uploaded');
+      throw new ApiException('file_missing');
     }
 
     const CHUNK_SIZE = 1000;
@@ -194,7 +195,7 @@ export class EquipmentService {
     });
 
     if (!findEquipment) {
-      throw new NotFoundException('Equipment not found or is rented');
+      throw new ApiException('equipment_leased');
     }
   }
 }

@@ -373,6 +373,14 @@ const passouPeloRbac = async (res, method, caminho) =>
   check('rota com :id casa com a permissao parametrizada',
     await passouPeloRbac(byId, 'GET', `/equipment/${ZERO}`), `HTTP ${byId.status}`);
 
+  /* O front escolhe o texto pelo codigo, e nunca mostra o `message`. O 404 do
+   * controller traz o codigo; o do guard continua igual ao de caminho que nao
+   * existe, sem codigo, como a secao acima confere. */
+  const corpoById = await byId.clone().json().catch(() => null);
+  check('registro que nao existe vem com codigo, e nao com frase',
+    byId.status === 404 && corpoById?.error === 'equipment_not_found' && corpoById?.statusCode === 404,
+    `HTTP ${byId.status} ${corpoById?.error}`);
+
   console.log('\n=== token entregue ao cliente (RFC 10017 secao 6.2.2.1) ===');
   const tokenRes = await get(`${APP}/auth/token`, appCookie);
   const grant = tokenRes.ok ? await tokenRes.json() : null;
@@ -400,7 +408,9 @@ const passouPeloRbac = async (res, method, caminho) =>
     idBearer?.email === `krloc-${tag}@exemplo.com`, idBearer?.email ?? `HTTP ${meBearer.status}`);
 
   const ruim = await fetch(`${APP}/equipment`, { headers: { Authorization: 'Bearer nao.e.um.jwt' } });
-  check('Bearer invalido devolve 401', ruim.status === 401, `HTTP ${ruim.status}`);
+  const corpoRuim = await ruim.clone().json().catch(() => null);
+  check('Bearer invalido devolve 401 com invalid_token (RFC 6750 secao 3.1)',
+    ruim.status === 401 && corpoRuim?.error === 'invalid_token', `HTTP ${ruim.status} ${corpoRuim?.error}`);
 
   const semNada = await fetch(`${APP}/equipment`);
   check('sem cookie e sem Bearer devolve 401', semNada.status === 401, `HTTP ${semNada.status}`);
@@ -532,25 +542,37 @@ const passouPeloRbac = async (res, method, caminho) =>
   const escrever = (headers) =>
     fetch(`${APP}/equipment`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: '{}' });
 
+  // O front reage ao codigo: e por ele que relê o token e repete a escrita.
+  const codigo = async (res) => (await res.clone().json().catch(() => null))?.error;
+
   const semToken = await escrever({ cookie: appCookie });
-  check('POST so com cookie, sem o header, devolve 403',
-    semToken.status === 403, `HTTP ${semToken.status}`);
+  check('POST so com cookie, sem o header, devolve 403 com csrf_token_invalid',
+    semToken.status === 403 && await codigo(semToken) === 'csrf_token_invalid', `HTTP ${semToken.status}`);
 
   const tokenErrado = await escrever({ cookie: appCookie, 'x-csrf-token': 'a'.repeat(csrf.length) });
-  check('POST com token anti-CSRF errado devolve 403',
-    tokenErrado.status === 403, `HTTP ${tokenErrado.status}`);
+  check('POST com token anti-CSRF errado devolve 403 com csrf_token_invalid',
+    tokenErrado.status === 403 && await codigo(tokenErrado) === 'csrf_token_invalid', `HTTP ${tokenErrado.status}`);
 
   const origemEstranha = await escrever({
     cookie: appCookie, 'x-csrf-token': csrf, origin: 'https://site-do-atacante.example',
   });
-  check('Origin de outro site e recusado mesmo com o token certo',
-    origemEstranha.status === 403, `HTTP ${origemEstranha.status}`);
+  check('Origin de outro site e recusado mesmo com o token certo, com origin_not_allowed',
+    origemEstranha.status === 403 && await codigo(origemEstranha) === 'origin_not_allowed',
+    `HTTP ${origemEstranha.status}`);
+  check('a recusa de origem nao repete a origem recebida',
+    !(await origemEstranha.clone().text()).includes('site-do-atacante'));
 
   // 400 aqui significa que passou pelo guard e chegou a validacao do corpo, que
   // e exatamente o que se quer provar. O que nao pode e 401, 403 ou o 404 do guard.
   const comToken = await escrever({ cookie: appCookie, 'x-csrf-token': csrf, origin: APP_PUBLICO_ORIGEM });
   check('POST com cookie MAIS o header passa pelo guard',
     await passouPeloRbac(comToken, 'POST', '/equipment'), `HTTP ${comToken.status}`);
+
+  const recusa = await comToken.clone().json().catch(() => null);
+  check('corpo recusado vem como validation_failed, com o codigo de cada campo',
+    comToken.status === 400 && recusa?.error === 'validation_failed'
+      && recusa?.fields?.some((f) => f.field === 'name' && typeof f.error === 'string'),
+    `${recusa?.error} ${JSON.stringify(recusa?.fields?.map((f) => `${f.field}:${f.error}`))}`);
 
   // O Bearer atual: o primeiro guarda, por ate 30 segundos, o papel vazio que o
   // SSO respondeu na troca de papel acima.

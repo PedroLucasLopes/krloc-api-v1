@@ -1,9 +1,4 @@
-import {
-  BadRequestException,
-  HttpStatus,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { Accessory, Prisma, StatusEquipment } from 'generated/prisma/client';
 import { PrismaService } from 'src/global/prisma/prisma.service';
 import { PaginationConfig } from 'src/global/utils/pagination.utils';
@@ -15,6 +10,7 @@ import { EditAccessory } from '../dto/editAccessory.dto';
 import csv from 'csv-parser';
 import { AssociateEquipmentAccessory } from '../dto/associateEquipmentAccessory.dto';
 import { EquipmentAccessoryCreated } from '../dto/equipmentAccessoryCreated.dto';
+import { ApiException } from 'src/global/error/apiError';
 
 @Injectable()
 export class AccessoryService {
@@ -36,7 +32,7 @@ export class AccessoryService {
     });
 
     if (!accessories.length) {
-      throw new NotFoundException('No accessories registered');
+      throw new ApiException('no_results');
     }
 
     return accessories;
@@ -46,7 +42,7 @@ export class AccessoryService {
     const accessory = await this.prisma.accessory.findUnique({ where: { id } });
 
     if (!accessory) {
-      throw new NotFoundException('Accessory not found');
+      throw new ApiException('accessory_not_found');
     }
 
     return accessory;
@@ -59,7 +55,7 @@ export class AccessoryService {
 
   async importCsv(file: Express.Multer.File): Promise<CsvImport> {
     if (!file) {
-      throw new NotFoundException('No file uploaded');
+      throw new ApiException('file_missing');
     }
 
     const CHUNK_SIZE = 1000;
@@ -140,11 +136,11 @@ export class AccessoryService {
     ]);
 
     if (!equipment) {
-      throw new NotFoundException('Equipment not found');
+      throw new ApiException('equipment_not_found');
     }
 
     if (accessories.length < data.accessoryIds.length) {
-      throw new BadRequestException('Some accessories are not available');
+      throw new ApiException('accessories_unavailable');
     }
 
     const createEquipmentAccessory = await this.prisma.$transaction(
@@ -187,13 +183,11 @@ export class AccessoryService {
     });
 
     if (!findAccessory) {
-      throw new NotFoundException('Accessory not found');
+      throw new ApiException('accessory_not_found');
     }
 
     if (data.quantity !== undefined && findAccessory.quantity > data.quantity) {
-      throw new BadRequestException(
-        'You cant change quantity to less than you already have',
-      );
+      throw new ApiException('accessory_quantity_decrease');
     }
 
     const updateAccessory = await this.prisma.accessory.update({
@@ -211,13 +205,11 @@ export class AccessoryService {
     });
 
     if (!findAccessory) {
-      throw new NotFoundException('Accessory not found');
+      throw new ApiException('accessory_not_found');
     }
 
     if (findAccessory.equipments.length > 0) {
-      throw new BadRequestException(
-        'You have equipments associated with this accessory',
-      );
+      throw new ApiException('accessory_in_use');
     }
 
     if (findAccessory.quantity > 0) {

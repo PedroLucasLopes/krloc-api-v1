@@ -10,12 +10,10 @@ import {
   Put,
   Query,
   UploadedFile,
-  UseFilters,
   UseInterceptors,
 } from '@nestjs/common';
 import { EquipmentService } from '../service/equipment.service';
 import { Equipment } from 'generated/prisma/client';
-import { PrismaExceptionValidationFilter } from 'src/global/error/prismacientvalidationerror.exception';
 import { CreateEquipmentDto } from '../dto/createEquipment.dto';
 import { EditEquipmentDto } from '../dto/editEquipment.dto';
 import { FilterEquipmentDTO } from '../dto/filterequipment.dto';
@@ -44,7 +42,6 @@ export class EquipmentController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  @UseFilters(new PrismaExceptionValidationFilter())
   async createEquipment(
     @Body() createEquipmentDto: CreateEquipmentDto,
   ): Promise<Equipment> {

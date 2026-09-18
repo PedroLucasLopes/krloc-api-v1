@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { Client } from 'generated/prisma/client';
 import { PrismaService } from 'src/global/prisma/prisma.service';
 import { PaginationConfig } from 'src/global/utils/pagination.utils';
@@ -9,6 +9,7 @@ import { ZipcodeService } from 'src/global/address/zipcode.service';
 import { AddressValidator } from 'src/global/address/address.validator';
 import { normalizeApiAddress } from 'src/global/utils/normalizeApiAddress.utils';
 import { zipcodeAddress } from 'src/global/utils/zipcodeAddress.utils';
+import { ApiException } from 'src/global/error/apiError';
 
 @Injectable()
 export class ClientService {
@@ -44,7 +45,7 @@ export class ClientService {
     });
 
     if (clients.length === 0) {
-      throw new NotFoundException('No clients found');
+      throw new ApiException('no_results');
     }
 
     return clients;
@@ -56,7 +57,7 @@ export class ClientService {
     });
 
     if (!client) {
-      throw new NotFoundException(`Client not found`);
+      throw new ApiException('client_not_found');
     }
 
     return client;
@@ -81,7 +82,7 @@ export class ClientService {
     const clientExists = await this.prisma.client.findUnique({ where: { id } });
 
     if (!clientExists) {
-      throw new NotFoundException('Client not found');
+      throw new ApiException('client_not_found');
     }
 
     const zipcode = data.zipcode?.replace(/-/g, '');
@@ -129,9 +130,7 @@ export class ClientService {
     });
 
     if (client && client.lessees.length > 0) {
-      throw new NotFoundException(
-        'This client has associated lessees and cannot be deleted',
-      );
+      throw new ApiException('client_has_lessees');
     }
 
     await this.prisma.client.delete({

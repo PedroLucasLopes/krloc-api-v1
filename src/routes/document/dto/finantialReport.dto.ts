@@ -9,6 +9,7 @@ export class FinantialReportDto {
   @IsDateString()
   @IsDateAfter('startDate', {
     message: 'endDate cannot be before startDate',
+    context: { code: 'end_before_start' },
   })
   endDate: Date;
 }

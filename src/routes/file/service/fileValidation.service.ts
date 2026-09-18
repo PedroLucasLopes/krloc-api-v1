@@ -1,9 +1,10 @@
-import { PipeTransform, Injectable, BadRequestException } from '@nestjs/common';
+import { PipeTransform, Injectable } from '@nestjs/common';
 import {
   MAX_UPLOAD_BYTES,
   SPREADSHEET_EXTENSION,
   SPREADSHEET_MIME_TYPES,
 } from '../file.constant';
+import { ApiException } from 'src/global/error/apiError';
 
 /**
  * Confere o arquivo da importacao antes de ele virar cadastro.
@@ -16,18 +17,21 @@ import {
 export class FileSizeValidationPipe implements PipeTransform {
   transform(value: Express.Multer.File) {
     if (!value) {
-      throw new BadRequestException('No file uploaded');
+      throw new ApiException('file_missing');
     }
 
     if (value.size > MAX_UPLOAD_BYTES) {
-      throw new BadRequestException('File size exceeds the 2MB limit');
+      throw new ApiException('file_too_large');
     }
 
     const nome = value.originalname ?? '';
     const tipo = value.mimetype ?? '';
 
-    if (!SPREADSHEET_EXTENSION.test(nome) || !SPREADSHEET_MIME_TYPES.has(tipo)) {
-      throw new BadRequestException('Only .csv files are accepted');
+    if (
+      !SPREADSHEET_EXTENSION.test(nome) ||
+      !SPREADSHEET_MIME_TYPES.has(tipo)
+    ) {
+      throw new ApiException('file_type_invalid');
     }
 
     return value;

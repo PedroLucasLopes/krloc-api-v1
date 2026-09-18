@@ -23,6 +23,7 @@ export class CreateELeaseDto {
   @IsNotEmpty()
   @IsDateAfter('startDate', {
     message: 'endDate cannot be before startDate',
+    context: { code: 'end_before_start' },
   })
   endDate: Date;
 
@@ -30,6 +31,7 @@ export class CreateELeaseDto {
   @IsOptional()
   @IsDateAfter('startDate', {
     message: 'finishDate cannot be before startDate',
+    context: { code: 'end_before_start' },
   })
   finishDate?: Date;
 

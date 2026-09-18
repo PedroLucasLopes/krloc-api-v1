@@ -10,13 +10,11 @@ import {
   Put,
   Query,
   UploadedFile,
-  UseFilters,
   UseInterceptors,
 } from '@nestjs/common';
 import { AccessoryService } from '../service/accessory.service';
 import { Accessory } from 'generated/prisma/client';
 import { FilterAccessory } from '../dto/filterAccessory.dto';
-import { PrismaExceptionValidationFilter } from 'src/global/error/prismacientvalidationerror.exception';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
 import { FileSizeValidationPipe } from 'src/routes/file/service/fileValidation.service';
@@ -44,7 +42,6 @@ export class AccessoryController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  @UseFilters(new PrismaExceptionValidationFilter())
   async createAccessory(@Body() data: CreateAccessory): Promise<Accessory> {
     return await this.accessoryService.createAccessory(data);
   }
@@ -64,7 +61,6 @@ export class AccessoryController {
 
   @Post('associate')
   @HttpCode(HttpStatus.CREATED)
-  @UseFilters(new PrismaExceptionValidationFilter())
   async associateEquipmentsToAccessory(
     @Body() data: AssociateEquipmentAccessory,
   ): Promise<EquipmentAccessoryCreated> {

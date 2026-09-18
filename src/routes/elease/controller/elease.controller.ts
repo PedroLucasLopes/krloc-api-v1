@@ -8,10 +8,8 @@ import {
   Post,
   Put,
   Query,
-  UseFilters,
 } from '@nestjs/common';
 import { ELease, Equipment } from 'generated/prisma/client';
-import { PrismaExceptionValidationFilter } from 'src/global/error/prismacientvalidationerror.exception';
 import { ELeaseService } from '../service/elease.service';
 import { CreateELeaseDto } from '../dto/createELease.dto';
 import { FilterELeaseDto } from '../dto/filterELease.dto';
@@ -38,7 +36,6 @@ export class ELeaseController {
   // Contract
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  @UseFilters(new PrismaExceptionValidationFilter())
   async createElease(
     @Body() createEleaseDto: CreateELeaseDto,
   ): Promise<ELease> {

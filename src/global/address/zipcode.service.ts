@@ -1,8 +1,9 @@
 import { firstValueFrom } from 'rxjs';
 import { ZipcodeInfo } from '../types/zipcodevalidator';
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
+import { ApiException } from 'src/global/error/apiError';
 
 @Injectable()
 export class ZipcodeService {
@@ -24,7 +25,7 @@ export class ZipcodeService {
     const somenteDigitos = zipcode.replace(/\D/g, '');
 
     if (somenteDigitos.length !== 8) {
-      throw new NotFoundException('Zipcode Not Found');
+      throw new ApiException('zipcode_not_found');
     }
 
     const { data } = await firstValueFrom(
@@ -34,7 +35,7 @@ export class ZipcodeService {
     );
 
     if (!data || data.erro) {
-      throw new NotFoundException('Zipcode Not Found');
+      throw new ApiException('zipcode_not_found');
     }
 
     return {

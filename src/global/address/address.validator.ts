@@ -1,7 +1,8 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { Addressable } from '../types/addressable';
 import { compareAddress } from '../utils/compareAddress.utils';
 import { NormalizedAddress } from '../types/normalizedAddress';
+import { ApiException } from 'src/global/error/apiError';
 
 @Injectable()
 export class AddressValidator {
@@ -18,9 +19,7 @@ export class AddressValidator {
       value &&
       compareAddress(bodyValue) !== compareAddress(value)
     ) {
-      throw new BadRequestException(
-        `${bodyValue} dont match with this zipcode`,
-      );
+      throw new ApiException('address_mismatch', { value: bodyValue });
     }
   }
 }

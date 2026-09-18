@@ -1,6 +1,6 @@
-import { BadRequestException } from '@nestjs/common';
 import { Addressable } from '../types/addressable';
 import { ZipcodeInfo } from '../types/zipcodevalidator';
+import { ApiException } from 'src/global/error/apiError';
 
 /**
  * O endereco que se grava com um CEP: o que a base tem vence, e o que ela deixa
@@ -15,7 +15,7 @@ export const zipcodeAddress = (zipCode: ZipcodeInfo, data: Addressable) => {
   const city = zipCode.localidade || data.city;
 
   if (!address || !city) {
-    throw new BadRequestException('Address is required for this zipcode');
+    throw new ApiException('address_required');
   }
 
   return {

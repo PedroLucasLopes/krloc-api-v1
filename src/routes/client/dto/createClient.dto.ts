@@ -26,9 +26,11 @@ export class CreateClientDto {
   @IsOptional()
   @IsPhoneNumber('BR', {
     message: 'Please enter a valid phone number',
+    context: { code: 'phone_invalid' },
   })
   @MinLength(9, {
     message: 'Phone number must be at least 10 characters long',
+    context: { code: 'phone_invalid' },
   })
   phone?: string;
 
@@ -36,9 +38,11 @@ export class CreateClientDto {
   @IsNotEmpty()
   @MinLength(10, {
     message: 'Tax ID must be at least 11 characters long',
+    context: { code: 'tax_id_invalid' },
   })
   @IsTaxId('pt-BR', {
     message: 'Please enter a valid tax ID',
+    context: { code: 'tax_id_invalid' },
   })
   tax_id: string;
 
@@ -54,9 +58,11 @@ export class CreateClientDto {
   @IsNotEmpty()
   @IsPostalCode('BR', {
     message: 'Zipcode must be a valid Brazilian postal code',
+    context: { code: 'zipcode_invalid' },
   })
   @MinLength(8, {
     message: 'Zipcode must be at least 8 characters long',
+    context: { code: 'zipcode_invalid' },
   })
   zipcode: string;
 
@@ -77,6 +83,7 @@ export class CreateClientDto {
   @Length(2, 2)
   @Matches(/^[A-Z]{2}$/, {
     message: 'The state has to be no longer 2 characters',
+    context: { code: 'state_invalid' },
   })
   state?: string;
 }

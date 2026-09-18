@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { ApiException } from 'src/global/error/apiError';
 
 export const validateCode = (equipmentCode: string): string => {
   const codeStartPattern = /^KR/gi;
@@ -9,11 +9,11 @@ export const validateCode = (equipmentCode: string): string => {
   const startsWithKR = codeStartPattern.test(equipmentCode);
 
   if (ignoreEverythingAfterCodePrefix.length < 3) {
-    throw new BadRequestException('The code needs at least 3 characters');
+    throw new ApiException('equipment_code_too_short');
   }
 
   if (!startsWithKR) {
-    throw new BadRequestException('The code have to start with KR');
+    throw new ApiException('equipment_code_prefix');
   }
 
   return ignoreEverythingAfterCodePrefix.toUpperCase();

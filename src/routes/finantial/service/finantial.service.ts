@@ -1,7 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { LeaseItem } from 'generated/prisma/client';
 import { StatusEquipment } from 'generated/prisma/enums';
 import { PrismaService } from 'src/global/prisma/prisma.service';
+import { ApiException } from 'src/global/error/apiError';
 
 @Injectable()
 export class FinantialService {
@@ -16,7 +17,7 @@ export class FinantialService {
     });
 
     if (!contract) {
-      throw new NotFoundException('Contract not found');
+      throw new ApiException('contract_not_found');
     }
 
     const replacedCodes = new Set(

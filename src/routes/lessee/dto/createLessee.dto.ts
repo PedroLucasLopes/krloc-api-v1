@@ -22,9 +22,11 @@ export class CreateLesseeDTO {
   @IsNotEmpty()
   @IsPostalCode('BR', {
     message: 'Zipcode must be a valid Brazilian postal code',
+    context: { code: 'zipcode_invalid' },
   })
   @MinLength(8, {
     message: 'Zipcode must be at least 8 characters long',
+    context: { code: 'zipcode_invalid' },
   })
   zipcode: string;
 
@@ -45,6 +47,7 @@ export class CreateLesseeDTO {
   @Length(2, 2)
   @Matches(/^[A-Z]{2}$/, {
     message: 'The state has to be no longer 2 characters',
+    context: { code: 'state_invalid' },
   })
   state?: string;
 

@@ -10,6 +10,7 @@ import { AppService } from './app.service';
 
 import { PrismaModule } from './global/prisma/prisma.module';
 import { PrismaExceptionFilter } from './global/error/prismaclientknownerror.exception';
+import { PrismaExceptionValidationFilter } from './global/error/prismacientvalidationerror.exception';
 
 import { EquipmentModule } from './routes/equipment/equipment.module';
 import { ClientModule } from './routes/client/client.module';
@@ -61,7 +62,9 @@ import { AccessoryModule } from './routes/accessory/accessory.module';
     AppService,
     // Antes do guard do sso-client: enxurrada sem sessao para no limite.
     { provide: APP_GUARD, useClass: ThrottlerGuard },
+    // Erro do Prisma vira codigo; o texto dele, que traz a consulta, fica no log.
     { provide: APP_FILTER, useClass: PrismaExceptionFilter },
+    { provide: APP_FILTER, useClass: PrismaExceptionValidationFilter },
   ],
 })
 export class AppModule {}

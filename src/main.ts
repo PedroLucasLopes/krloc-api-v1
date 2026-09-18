@@ -1,10 +1,10 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
-import { PrismaExceptionFilter } from './global/error/prismaclientknownerror.exception';
 import { ValidationPipe } from '@nestjs/common';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
 import { PerformanceInterceptor } from './global/interceptors/performance.interceptor';
+import { validationException } from './global/error/validationError';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
@@ -50,7 +50,6 @@ async function bootstrap() {
   }
 
   app.setGlobalPrefix('api');
-  app.useGlobalFilters(new PrismaExceptionFilter());
   // Sem `cookie-parser` aqui: o SsoClientModule registra o dele.
   app.useGlobalInterceptors(new PerformanceInterceptor());
   app.useGlobalPipes(
@@ -58,6 +57,8 @@ async function bootstrap() {
       whitelist: true,
       forbidNonWhitelisted: true,
       transform: true,
+      // A recusa sai com codigo por campo, no contrato de erro da API.
+      exceptionFactory: validationException,
     }),
   );
   await app.listen(process.env.PORT ?? 3000);
