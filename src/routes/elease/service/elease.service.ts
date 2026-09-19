@@ -17,10 +17,15 @@ import { ReplaceEquipmentDto } from '../dto/replaceEquipment.dto';
 import { LeaseItemAccessoryData } from '../types/leaseItemAccessoryData';
 import { EquipmentWithAccessories } from '../types/equipmentWithAccessories';
 import { ApiException } from 'src/global/error/apiError';
+import { BillingService } from 'src/routes/finantial/service/billing.service';
+import { statementToApi } from 'src/routes/finantial/billing/statement';
 
 @Injectable()
 export class ELeaseService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private billing: BillingService,
+  ) {}
 
   async findAll(filter: FilterELeaseDto): Promise<ELease[]> {
     const { page, limit } = PaginationConfig(filter);
@@ -248,6 +253,16 @@ export class ELeaseService {
           throw new ApiException('contract_document_missing');
         }
 
+        // O valor contratado vai para o historico no inicio: e o que o documento
+        // assinado diz, pela tabela da data da assinatura (clausula 7a).
+        const contracted = statementToApi(
+          await this.billing.compute(
+            await this.billing.contract(id, tx),
+            new Date(),
+            tx,
+          ),
+        );
+
         const [start, ,] = await Promise.all([
           tx.eLease.update({
             where: { id, status: LeaseStatus.PENDING },
@@ -270,6 +285,12 @@ export class ELeaseService {
               metadata: {
                 contractId: id,
                 reason: LeaseStatus.ACTIVE,
+                plannedDays: contracted.plannedDays,
+                contracted: contracted.totals.contracted,
+                positions: contracted.positions.map((position) => ({
+                  units: position.units.map((unit) => unit.code),
+                  contracted: position.contracted,
+                })),
               },
             },
           }),
@@ -683,7 +704,8 @@ export class ELeaseService {
             },
             data: {
               finalStatus: status,
-              finishDate: status === StatusEquipment.STOLEN ? null : new Date(),
+              // Roubo tambem tem data: o uso do roubado e cobrado ate ela.
+              finishDate: new Date(),
             },
           }),
         ]);
@@ -734,6 +756,7 @@ export class ELeaseService {
     }
 
     // 3. Busca todos os leaseItems relevantes de uma vez
+    // So o que voltou para manutencao ou foi roubado, e ainda nao ganhou substituto.
     const oldLeaseItems = await this.prisma.leaseItem.findMany({
       where: {
         contractId,
@@ -741,6 +764,7 @@ export class ELeaseService {
         finalStatus: {
           in: [StatusEquipment.MAINTENANCE, StatusEquipment.STOLEN],
         },
+        replacedBy: { is: null },
       },
     });
 
@@ -828,6 +852,8 @@ export class ELeaseService {
       (id) => oldEquipmentMap.get(id)!.status === StatusEquipment.MAINTENANCE,
     );
 
+    const replacedAt = new Date();
+
     // 6. Transação: executa todas as trocas atomicamente
     const updatedLease = await this.prisma.$transaction(
       async (tx: Prisma.TransactionClient) => {
@@ -850,12 +876,11 @@ export class ELeaseService {
             },
           }),
 
-          // Cria leaseItems dos novos herdando startDate do leaseItem antigo correspondente
+          // O item do substituto aponta para o que ele substitui e comeca hoje.
+          // A posicao continua sendo cobrada desde o inicio do original.
           tx.leaseItem.createMany({
             data: replacements.map(({ oldEquipmentId, newEquipmentId }) => {
               const newEq = newEquipmentMap.get(newEquipmentId)!;
-              const billingStartDate =
-                oldLeaseItemMap.get(oldEquipmentId)!.startDate;
 
               return {
                 contractId,
@@ -869,7 +894,8 @@ export class ELeaseService {
                 p_monthly: newEq.p_monthly,
                 p_indemnity: newEq.p_indemnity,
                 startStatus: StatusEquipment.REPLACE,
-                startDate: billingStartDate,
+                startDate: replacedAt,
+                replacesItemId: oldLeaseItemMap.get(oldEquipmentId)!.id,
               };
             }),
           }),
@@ -913,8 +939,8 @@ export class ELeaseService {
                         suffix: newEq.suffix,
                         status: StatusEquipment.REPLACE,
                       },
-                      billingStartDate:
-                        oldLeaseItemMap.get(oldEquipmentId)!.startDate,
+                      replacesItemId: oldLeaseItemMap.get(oldEquipmentId)!.id,
+                      replacedAt,
                     };
                   },
                 ),
@@ -946,13 +972,11 @@ export class ELeaseService {
             status: LeaseStatus.ACTIVE,
           },
           include: {
+            // Travam o fechamento so os itens ainda na obra. O roubado tem data e
+            // entra na conta com a indenizacao (clausula 6a).
             leaseItems: {
               where: {
-                OR: [
-                  { finishDate: null },
-                  { finalStatus: null },
-                  { finalStatus: StatusEquipment.STOLEN },
-                ],
+                OR: [{ finishDate: null }, { finalStatus: null }],
               },
             },
             lessee: {
@@ -988,6 +1012,21 @@ export class ELeaseService {
 
         const finishDate = new Date();
 
+        // O extrato do fechamento e o que se cobra: fica gravado na auditoria, e
+        // o historico nao muda se a tabela de precos mudar depois.
+        const statement = statementToApi(
+          await this.billing.compute(
+            {
+              ...(await this.billing.contract(id, tx)),
+              status: LeaseStatus.COMPLETED,
+              finishDate,
+            },
+            finishDate,
+            tx,
+          ),
+          true,
+        );
+
         const [close, ,] = await Promise.all([
           tx.eLease.update({
             where: { id, status: LeaseStatus.ACTIVE },
@@ -1013,6 +1052,7 @@ export class ELeaseService {
                 finishDate,
                 status: LeaseStatus.COMPLETED,
                 releasedEquipments,
+                statement,
               },
             },
           }),

@@ -23,15 +23,28 @@ import * as fs from 'fs';
 import * as path from 'path';
 import contractModel from '../utils/contract.json';
 import { labelValue, text12, text9 } from '../helper/textFormat.helper';
+import { money, moneyOrDash } from '../helper/report.helper';
 import { ELeaseById } from 'src/routes/elease/types/eLeaseById';
-import { ELease, LeaseItem } from 'generated/prisma/client';
+import { LeaseItem } from 'generated/prisma/client';
+import type { StatementDto } from 'src/routes/finantial/billing/statement';
 
 @Injectable()
 export class FormatService {
   constructor() {}
-  async contract(data: ELeaseById): Promise<Buffer> {
+  /**
+   * O contrato para assinar. O valor de cada equipamento e o do periodo
+   * contratado pela tabela da data da assinatura (clausula 7a), e a tabela de
+   * precos vai junto: e por ela que se cobram prorrogacao e dia excedente.
+   */
+  async contract(data: ELeaseById, statement: StatementDto): Promise<Buffer> {
     const lessee = data.lessee;
     const equipments = data.leaseItems;
+    const contractedByItem = new Map(
+      statement.positions.map((position) => [
+        position.units[0].itemId,
+        position.contracted,
+      ]),
+    );
     const { equipment, client, clientLessee, headers, paragraph } =
       contractModel;
 
@@ -154,15 +167,11 @@ export class FormatService {
           }),
           new TableCell({
             verticalAlign: VerticalAlign.CENTER,
-            children: [
-              text12(
-                `${equipment.table.columns.currency}${Number(eq.p_indemnity ?? '-')}`,
-              ),
-            ],
+            children: [text12(money(eq.p_indemnity))],
           }),
           new TableCell({
             verticalAlign: VerticalAlign.CENTER,
-            children: [text12(`-`)],
+            children: [text12(money(contractedByItem.get(eq.id) ?? 0))],
           }),
         ],
       });
@@ -200,6 +209,51 @@ export class FormatService {
           ],
         }),
         ...equipmentRows,
+      ],
+    });
+
+    const priceHeader = [
+      equipment.table.columns.product,
+      equipment.table.columns.daily,
+      equipment.table.columns.weekly,
+      equipment.table.columns.biweekly,
+      equipment.table.columns.monthly,
+    ];
+
+    const priceTable = new Table({
+      width: {
+        size: 100,
+        type: WidthType.PERCENTAGE,
+      },
+      borders: noBorders,
+      rows: [
+        new TableRow({
+          children: priceHeader.map(
+            (label) =>
+              new TableCell({
+                verticalAlign: VerticalAlign.CENTER,
+                children: [text12(label, true)],
+              }),
+          ),
+        }),
+        ...equipments.map(
+          (eq: LeaseItem) =>
+            new TableRow({
+              children: [
+                `${eq.equipmentName} ${eq.equipmentCode}-${eq.equipmentSuffix}`,
+                money(eq.p_diary),
+                moneyOrDash(eq.p_weekly),
+                moneyOrDash(eq.p_biweekly),
+                moneyOrDash(eq.p_monthly),
+              ].map(
+                (value) =>
+                  new TableCell({
+                    verticalAlign: VerticalAlign.CENTER,
+                    children: [text12(value)],
+                  }),
+              ),
+            }),
+        ),
       ],
     });
 
@@ -344,6 +398,23 @@ export class FormatService {
               children: [
                 new TextRun({
                   font: 'CALIBRI',
+                  text: headers.titles.priceTable,
+                  bold: true,
+                }),
+              ],
+            }),
+
+            new Paragraph(''),
+
+            priceTable,
+
+            new Paragraph(''),
+
+            new Paragraph({
+              alignment: AlignmentType.CENTER,
+              children: [
+                new TextRun({
+                  font: 'CALIBRI',
                   text: headers.titles.rentDate,
                   bold: true,
                 }),
@@ -372,7 +443,7 @@ export class FormatService {
             new Paragraph(''),
 
             new Paragraph(
-              `${paragraph.totalValue} ${equipment.table.columns.currency}xx,xx`,
+              `${paragraph.totalValue} ${money(statement.totals.contracted)}`,
             ),
 
             new Paragraph(''),
@@ -433,8 +504,10 @@ export class FormatService {
             text9(paragraph.clausules.footer),
             new Paragraph(''),
             text9(
+              // O dia da assinatura e o de Sao Paulo, nao o do relogio do container, em UTC.
               `Local e data: Contagem, ${new Date().toLocaleDateString(
                 'pt-BR',
+                { timeZone: 'America/Sao_Paulo' },
               )}`,
             ),
             new Paragraph({
@@ -450,20 +523,6 @@ export class FormatService {
     });
 
     const buffer = await Packer.toBuffer(contract);
-    return buffer;
-  }
-
-  async finantialReport(data: ELease): Promise<Buffer> {
-    console.log(data);
-    const finantialReport = new Document({ sections: [] });
-    const buffer = await Packer.toBuffer(finantialReport);
-    return buffer;
-  }
-
-  async contractClosure(data: ELeaseById): Promise<Buffer> {
-    console.log(data);
-    const contractClosure = new Document({ sections: [] });
-    const buffer = await Packer.toBuffer(contractClosure);
     return buffer;
   }
 }

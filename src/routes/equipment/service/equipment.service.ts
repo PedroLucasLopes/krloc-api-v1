@@ -9,6 +9,7 @@ import { FilterEquipmentDTO } from '../dto/filterequipment.dto';
 import csv from 'csv-parser';
 import { Readable } from 'stream';
 import { CsvImport } from 'src/global/types/csvImport';
+import { CONTRACT_STATUSES } from '../utils/editableStatus';
 import { parseStatus } from '../utils/parseStatus.utils';
 import { ApiException } from 'src/global/error/apiError';
 
@@ -107,12 +108,23 @@ export class EquipmentService {
 
     await new Promise<void>((resolve, reject) => {
       const processBatch = async () => {
+        // Celula vazia de pacote opcional e "sem preco", e nao zero: um zero
+        // entraria na conta como pacote de graca.
+        const optional = (value: unknown): number | null =>
+          typeof value === 'number'
+            ? value
+            : typeof value === 'string' && value.trim() !== ''
+              ? Number(value)
+              : null;
+
+        // So as colunas do cadastro. Espalhar a linha inteira gravava qualquer
+        // coluna da planilha que fosse campo da tabela: id, eleaseId, suffix.
         const formattedBatch = batch.map((item) => ({
-          ...item,
+          name: String(item.name ?? '').trim(),
           p_diary: Number(item.p_diary),
-          p_weekly: Number(item?.p_weekly),
-          p_biweekly: Number(item?.p_biweekly),
-          p_monthly: Number(item?.p_monthly),
+          p_weekly: optional(item?.p_weekly),
+          p_biweekly: optional(item?.p_biweekly),
+          p_monthly: optional(item?.p_monthly),
           p_indemnity: Number(String(item?.p_indemnity).replace(/[=,]/g, '')),
           code: validateCode(item.code?.trim()),
           status: parseStatus(item.status),
@@ -184,12 +196,13 @@ export class EquipmentService {
     });
   }
 
+  /** Equipamento em contrato, reservado, locado ou substituto, so muda pelo contrato. */
   private async equipmentIsRented(id: string): Promise<void> {
     const findEquipment = await this.prisma.equipment.findUnique({
       where: {
         id,
         status: {
-          not: StatusEquipment.LEASED,
+          notIn: CONTRACT_STATUSES,
         },
       },
     });

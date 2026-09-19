@@ -7,6 +7,10 @@
                     "model": "Modelo / Série",
                     "indemnity": "Valor Indenização",
                     "elease": "Valor Locação",
+                    "daily": "Diária",
+                    "weekly": "Semanal",
+                    "biweekly": "Quinzenal",
+                    "monthly": "Mensal",
                     "currency": "R$"
                 }
             }
@@ -38,6 +42,7 @@
             "renter": "LOCATÁRIO(A)",
             "leasedItems": "OBJETOS DESTE CONTRATO",
             "rentDate": "PRAZO DE LOCAÇÃO",
+            "priceTable": "TABELA DE PREÇOS",
             "contractValue": "VALOR DO CONTRATO",
             "conditions": "CLÁUSULAS E CONDIÇÕES"
         }

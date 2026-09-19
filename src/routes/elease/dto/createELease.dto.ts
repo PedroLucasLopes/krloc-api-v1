@@ -1,15 +1,22 @@
 import {
   IsArray,
   IsDateString,
-  IsEnum,
   IsNotEmpty,
-  IsOptional,
   IsString,
   IsUUID,
 } from 'class-validator';
-import { LeaseStatus } from 'generated/prisma/client';
+import {
+  IsDateInRange,
+  IsWithinDays,
+  MAX_CONTRACT_DAYS,
+} from 'src/global/validators/dateRange.validators';
 import { IsDateAfter } from 'src/global/validators/isDateAfter.validators';
 
+/**
+ * O contrato nasce pendente, e so o ciclo muda isso: situacao e data de
+ * fechamento nao vem do corpo. Com elas aqui, um contrato nascia ativo sem o
+ * documento assinado, ou concluido sem nenhuma volta, direto no fechamento do mes.
+ */
 export class CreateELeaseDto {
   @IsString()
   @IsNotEmpty()
@@ -17,6 +24,10 @@ export class CreateELeaseDto {
 
   @IsDateString()
   @IsNotEmpty()
+  @IsDateInRange({
+    message: 'startDate is out of the accepted range',
+    context: { code: 'date_out_of_range' },
+  })
   startDate: Date;
 
   @IsDateString()
@@ -25,19 +36,15 @@ export class CreateELeaseDto {
     message: 'endDate cannot be before startDate',
     context: { code: 'end_before_start' },
   })
-  endDate: Date;
-
-  @IsDateString()
-  @IsOptional()
-  @IsDateAfter('startDate', {
-    message: 'finishDate cannot be before startDate',
-    context: { code: 'end_before_start' },
+  @IsDateInRange({
+    message: 'endDate is out of the accepted range',
+    context: { code: 'date_out_of_range' },
   })
-  finishDate?: Date;
-
-  @IsEnum(LeaseStatus)
-  @IsOptional()
-  status?: LeaseStatus;
+  @IsWithinDays('startDate', MAX_CONTRACT_DAYS, {
+    message: 'the contracted period is too long',
+    context: { code: 'period_too_long' },
+  })
+  endDate: Date;
 
   @IsArray()
   @IsString({ each: true })

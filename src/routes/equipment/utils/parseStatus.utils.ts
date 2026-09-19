@@ -1,11 +1,12 @@
 import { StatusEquipment } from 'generated/prisma/enums';
+import { EDITABLE_STATUSES } from './editableStatus';
 
-export const parseStatus = (status?: StatusEquipment) => {
+/** Situacao lida da planilha. So as do cadastro valem; o resto vira disponivel. */
+export const parseStatus = (status?: string): StatusEquipment => {
   const normalized = status?.trim().toUpperCase();
 
-  if (!Object.values(StatusEquipment).includes(normalized as StatusEquipment)) {
-    return StatusEquipment.AVAILABLE;
-  }
-
-  return normalized as StatusEquipment;
+  return (
+    EDITABLE_STATUSES.find((editable) => editable === normalized) ??
+    StatusEquipment.AVAILABLE
+  );
 };

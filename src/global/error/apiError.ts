@@ -168,6 +168,10 @@ export const API_ERRORS = {
     status: HttpStatus.BAD_REQUEST,
     message: 'Some equipment has not been returned yet',
   },
+  period_too_long: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    message: 'The period is longer than billing allows',
+  },
   no_activity_in_period: {
     status: HttpStatus.BAD_REQUEST,
     message: 'No equipment activity found for this period',

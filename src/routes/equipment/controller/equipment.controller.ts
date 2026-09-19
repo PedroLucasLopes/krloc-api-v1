@@ -19,6 +19,7 @@ import { EditEquipmentDto } from '../dto/editEquipment.dto';
 import { FilterEquipmentDTO } from '../dto/filterequipment.dto';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
+import { HEAVY_ROUTE_LIMIT } from 'src/global/utils/throttle';
 import { CsvImport } from 'src/global/types/csvImport';
 import { FileSizeValidationPipe } from 'src/routes/file/service/fileValidation.service';
 
@@ -51,7 +52,7 @@ export class EquipmentController {
   @Post('upload')
   // Le o arquivo inteiro e grava em lote: e a rota mais cara da API, e a que
   // mais rende a quem so quiser ocupa-la.
-  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Throttle(HEAVY_ROUTE_LIMIT)
   @HttpCode(HttpStatus.CREATED)
   @UseInterceptors(FileInterceptor('file'))
   async importCsv(

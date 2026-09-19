@@ -1,17 +1,22 @@
 import {
   Body,
   Controller,
-  Post,
   HttpCode,
   HttpStatus,
   Param,
+  Post,
   Res,
 } from '@nestjs/common';
-import { DocumentService } from '../service/document.service';
+import { Throttle } from '@nestjs/throttler';
 import { Response } from 'express';
-import { FinantialReportDto } from '../dto/finantialReport.dto';
+import { HEAVY_ROUTE_LIMIT } from 'src/global/utils/throttle';
+import { currentMonth } from 'src/routes/finantial/billing/calendar';
+import { ClosingQueryDto } from 'src/routes/finantial/dto/closingQuery.dto';
+import { DocumentService } from '../service/document.service';
 
+/** Todo documento e montado na hora, no mesmo processo: rota cara. */
 @Controller('generate')
+@Throttle(HEAVY_ROUTE_LIMIT)
 export class DocumentController {
   constructor(private readonly documentService: DocumentService) {}
 
@@ -24,16 +29,30 @@ export class DocumentController {
     return await this.documentService.generateContract(id, res);
   }
 
-  @Post('finantial/:id')
+  /** O fechamento do mes em documento. Corpo `{ month: "AAAA-MM" }`; sem ele, o mes corrente. */
+  @Post('finantial')
   @HttpCode(HttpStatus.OK)
-  async generateFinantialClose(
-    @Param('id') id: string,
+  async generateMonthlyClosing(
+    @Body() body: ClosingQueryDto,
     @Res() res: Response,
-    @Body() body: FinantialReportDto,
   ): Promise<void> {
-    return await this.documentService.generateFinantialReport(id, res, body);
+    return await this.documentService.generateMonthlyClosing(
+      body.month ?? currentMonth(),
+      res,
+    );
   }
 
+  /** O extrato de um contrato ativo. */
+  @Post('finantial/:id')
+  @HttpCode(HttpStatus.OK)
+  async generateStatement(
+    @Param('id') id: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    return await this.documentService.generateStatement(id, res);
+  }
+
+  /** A baixa de um contrato concluido. */
   @Post('closure/:id')
   @HttpCode(HttpStatus.OK)
   async generateContractClosure(

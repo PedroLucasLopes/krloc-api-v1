@@ -25,9 +25,30 @@ model Equipment {
   elease               ELease?              @relation(fields: [eleaseId], references: [id])
   equipmentAccessories EquipmentAccessory[]
   leaseItems           LeaseItem[]
+  prices               EquipmentPrice[]
 
   @@index([status])
   @@index([eleaseId])
+}
+
+/// Tabela de precos em vigor ao longo do tempo. O contrato cobra a prorrogacao
+/// pela tabela em vigor no vencimento (clausula 5a), o dia excedente pelo valor
+/// mensal atual (paragrafo unico) e a indenizacao pelo preco do dia do pagamento
+/// (7a). Sem historico, a mesma conta refeita depois de uma troca de preco sairia
+/// outra. Quem escreve e o gatilho `equipment_price_history`, na criacao do
+/// equipamento e a cada mudanca de preco, por qualquer caminho.
+model EquipmentPrice {
+  id          String    @id @default(uuid())
+  equipmentId String
+  p_diary     Float
+  p_weekly    Float?
+  p_biweekly  Float?
+  p_monthly   Float?
+  p_indemnity Float
+  validFrom   DateTime
+  equipment   Equipment @relation(fields: [equipmentId], references: [id])
+
+  @@index([equipmentId, validFrom])
 }
 
 model Accessory {
@@ -120,6 +141,11 @@ model LeaseItem {
   finalStatus       StatusEquipment?
   createdAt         DateTime         @default(now())
   finantialReportId String?
+  /// O item que este substitui, no mesmo contrato. A posicao do equipamento e a
+  /// cadeia original -> substitutos, cobrada como um aluguel so.
+  replacesItemId    String?          @unique
+  replaces          LeaseItem?       @relation("LeaseItemReplacement", fields: [replacesItemId], references: [id])
+  replacedBy        LeaseItem?       @relation("LeaseItemReplacement")
   contract          ELease           @relation(fields: [contractId], references: [id])
   equipment         Equipment        @relation(fields: [equipmentId], references: [id])
 

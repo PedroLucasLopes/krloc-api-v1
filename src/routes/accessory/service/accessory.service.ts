@@ -66,8 +66,9 @@ export class AccessoryService {
 
     await new Promise<void>((resolve, reject) => {
       const processBatch = async () => {
+        // So as colunas do cadastro. Espalhar a linha inteira gravava qualquer
+        // coluna da planilha que fosse campo da tabela, como o id.
         const formattedBatch = batch.map((item) => ({
-          ...item,
           name: item?.name,
           quantity: Number(item?.quantity),
           p_indemnity: Number(String(item?.p_indemnity).replace(/[=,]/g, '')),

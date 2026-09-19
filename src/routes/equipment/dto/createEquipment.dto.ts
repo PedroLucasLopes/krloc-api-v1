@@ -1,11 +1,12 @@
 import {
-  IsEnum,
+  IsIn,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
 } from 'class-validator';
 import { StatusEquipment } from 'generated/prisma/enums';
+import { EDITABLE_STATUSES } from '../utils/editableStatus';
 
 export class CreateEquipmentDto {
   @IsString()
@@ -36,7 +37,8 @@ export class CreateEquipmentDto {
   @IsNotEmpty()
   p_indemnity: number;
 
-  @IsEnum(StatusEquipment)
+  // Reservado, locado e substituto sao do contrato; desativado e o DELETE.
+  @IsIn(EDITABLE_STATUSES)
   @IsNotEmpty()
   status: StatusEquipment = StatusEquipment.AVAILABLE;
 }

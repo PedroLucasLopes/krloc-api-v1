@@ -30,7 +30,7 @@ npm run start:dev
 npm run build
 npm run lint
 npm run test:sso        # ponta a ponta contra a stack de pé, 94 asserções
-npx jest                # unidade: contrato de erro, validação por campo e filtros do Prisma
+npx jest                # unidade: cobrança pelas cláusulas, contrato de erro, validação e filtros do Prisma
 npx prisma migrate dev
 ```
 
@@ -64,6 +64,34 @@ ordem de subida; o SSO só precisa estar de pé quando alguém for logar.
 
 ---
 
+## 🚀 CI/CD
+
+`.github/workflows/ci.yml`, no GitHub Actions:
+
+| Quando | O que roda |
+|---|---|
+| pull request e push na `main` | `npm ci`, `npm audit` (produção sem aviso nenhum; o resto, sem alto), `prisma generate`, `lint:check`, build e testes de unidade |
+| pull request | a imagem é montada, sem publicar |
+| push na `main`, tag `v*` e à mão | as imagens da API e da migration vão para o GitHub Container Registry, `ghcr.io/pedrolucaslopes/krloc-api-v1` e `…-migrate`, com a tag do commit, `main` e a versão, proveniência e SBOM |
+
+- **O pacote privado.** O `npm ci` e o build da imagem leem `@pedrolucaslopes/sso-client` com o
+  `GITHUB_TOKEN` da execução, quando o pacote libera leitura a este repositório (nas configurações do
+  pacote, "Manage Actions access"), ou com o secret `PACKAGES_READ_TOKEN`, um token clássico com
+  `read:packages`. Sem um dos dois, o `npm ci` do pipeline responde 403.
+- **`lint:check` é o lint sem `--fix`.** O `lint` do modelo do Nest corrige sozinho, e no pipeline isso
+  esconderia o erro em vez de recusar.
+- **O ponta a ponta fica na máquina.** `npm run test:sso` precisa do SSO de pé com o projeto KRLoc e a
+  chave privada dele.
+- **O pipeline é superfície de ataque.** Actions fixadas por commit, `permissions: {}` no topo e o
+  mínimo por job, checkout sem credencial persistida, sem `pull_request_target`, e o token do npm como
+  secret do BuildKit. O Dependabot (`.github/dependabot.yml`) abre pull request para as actions e a
+  imagem base toda semana; o npm fica de fora, porque o pacote privado pede um token próprio dele.
+- **O deploy no GCP ainda não existe.** A imagem publicada é o artefato. Subir para o Cloud Run entra
+  quando houver o projeto no GCP e a federação de identidade das Actions, sem chave de conta de serviço
+  guardada em secret.
+
+---
+
 ## 📁 Estrutura
 
 ```bash
@@ -90,6 +118,7 @@ biblioteca. Se precisar mudar comportamento de autenticação, o lugar é `sso-c
 
 ```
 Client ──< Lessee ──< ELease ──< LeaseItem >── Equipment >── EquipmentAccessory ── Accessory
+                          │          └─ replacesItemId ─┘ ├──< EquipmentPrice
                           ├──< LeaseItemAccessory ── Accessory
                           └──< AuditLog
 ```
@@ -99,14 +128,16 @@ Client ──< Lessee ──< ELease ──< LeaseItem >── Equipment >──
 | `Client` | dono do contrato · `tax_id` único · endereço validado por CEP |
 | `Lessee` | locatário (obra) pertencente a um `Client` · 1 Client : N Lessees |
 | `Equipment` | máquina · `code` normalizado com prefixo `KR` + `suffix` autoincrement |
+| `EquipmentPrice` | histórico da tabela de preços: uma linha por mudança, com `validFrom`. Escrito pelo gatilho `equipment_price_history`, nunca pelo código |
 | `Accessory` | item avulso associável a equipamentos (`EquipmentAccessory`, PK composta) |
 | `ELease` | o contrato |
-| `LeaseItem` | **snapshot imutável** do equipamento no momento da locação |
+| `LeaseItem` | **snapshot imutável** do equipamento no momento da locação. `replacesItemId` liga o substituto ao item que ele substitui |
 | `LeaseItemAccessory` | snapshot dos acessórios |
-| `AuditLog` | trilha do contrato (`AuditAction` + `metadata` JSON) |
+| `AuditLog` | trilha do contrato (`AuditAction` + `metadata` JSON). O fechamento grava o extrato |
 
 `LeaseItem` é o coração do faturamento: os preços são **congelados** na criação, então mexer na
-tabela de preços do `Equipment` não reescreve contrato já emitido.
+tabela de preços do `Equipment` não reescreve contrato já emitido. Prorrogação e dia excedente usam a
+tabela **em vigor na data**, que sai do `EquipmentPrice`. Ver "Cobrança".
 
 Enums: `StatusEquipment` (AVAILABLE · LEASED · MAINTENANCE · RETIRED · STOLEN · PENDING · REPLACE),
 `LeaseStatus` (PENDING · ACTIVE · COMPLETED · CANCELLED), `AuditAction`.
@@ -131,16 +162,64 @@ Regras que `ELeaseService` (~1000 linhas) garante:
 - **Cancelamento** só em `PENDING` e com todo equipamento ainda `PENDING`: os equipamentos voltam a
   `AVAILABLE`, fora do contrato, e os itens fecham.
 - **Volta** (`PUT /elease/status`) aceita equipamento `LEASED` ou `REPLACE` ligado ao **próprio**
-  contrato. `AVAILABLE` solta do contrato; `MAINTENANCE` e `STOLEN` continuam ligados e podem ganhar
-  substituto (`PUT /elease/replace`), que entra `REPLACE` e registra volta como qualquer outro.
-- **Fechamento** só passa se nenhum `LeaseItem` estiver sem `finishDate`/`finalStatus` ou marcado
-  `STOLEN`; caso contrário devolve 400 com a lista de pendências. Ao fechar, o equipamento que ainda
-  aponta para o contrato (o que voltou para manutenção sem substituto) sai dele sem mudar de
-  situação, e o `AuditLog` registra quais.
+  contrato, e grava `finishDate` em todas, roubo inclusive. `AVAILABLE` solta do contrato;
+  `MAINTENANCE` e `STOLEN` continuam ligados e podem ganhar substituto (`PUT /elease/replace`), que
+  entra `REPLACE`, começa no dia da troca e aponta para o item que substitui (`replacesItemId`). Item
+  que já tem substituto não é trocado de novo; o substituto que quebrar, sim.
+- **Início** grava no `AuditLog` o valor contratado de cada posição, o do documento assinado.
+- **Fechamento** só passa se nenhum `LeaseItem` estiver sem `finishDate`/`finalStatus`; caso
+  contrário devolve 400 com a lista de pendências. Roubado não trava mais: tem volta e indenização. Ao
+  fechar, o equipamento que ainda aponta para o contrato (o que voltou para manutenção sem substituto)
+  sai dele sem mudar de situação, e o `AuditLog` registra quais **e o extrato do fechamento**, que
+  não muda depois: é o que a baixa e o fechamento do mês leem.
 - Toda transição relevante grava `AuditLog`.
 
-Cálculo financeiro (`FinantialService`): faixas decrescentes 30 / 15 / 7 / 1 dias sobre
-`p_monthly`, `p_biweekly`, `p_weekly`, `p_diary`, ignorando itens substituídos.
+---
+
+## 💰 Cobrança pelas cláusulas do contrato
+
+**O contrato de locação é a regra.** O texto dele está em `document/utils/contract.json`, e o motor em
+`routes/finantial/billing/`, sem banco: `calendar.ts` (dias), `packages.ts` (pacotes), `rules.ts` (a
+cobrança de uma posição) e `statement.ts` (o extrato). `billing.spec.ts` cobre cada caso. Todo valor
+corre em centavos e sai em reais.
+
+| Cláusula | O que a conta faz |
+|---|---|
+| 1ª, parágrafo segundo | **dias corridos da retirada à efetiva devolução de cada equipamento**, no dia de São Paulo, ao menos um |
+| 7ª | preço do período pela tabela da assinatura: o snapshot do `LeaseItem` |
+| 5ª | vencido o período, prorrogação por igual período pela tabela em vigor no vencimento |
+| parágrafo único da 5ª | dias além do último período vencido a 10% do mensal atual; sem mensal, a diária |
+| 6ª e 7ª | roubo soma a indenização pelo preço do dia do pagamento, o do fechamento |
+
+- **Cada equipamento é cobrado até a própria volta.** Dentro do período contratado, o uso sai na
+  combinação mais barata de diária, semana, quinzena e mês que cobre os dias (`cheapestCover`), e
+  nunca passa do contratado. Quem devolve em um dia de um contrato de uma semana paga uma diária.
+- **O valor contratado não é piso.** É o do período inteiro, o do documento e o do orçamento do
+  contrato pendente (`quotePosition`), e o que a obra paga se ficar o prazo todo.
+- **Posição** é o equipamento com os substitutos dele (`positionsOf`), cobrada como um aluguel só,
+  da retirada do original à volta do último. Defeito ou roubo sem substituto encerram a posição no dia.
+- **Acessório não entra na conta.** É contado por quantidade, não por unidade, e não há registro de
+  acessório perdido ou quebrado. A 6ª e a 7ª preveem indenizá-lo; isso pede um fluxo de volta de
+  acessório que ainda não existe.
+- **Preço zero não é pacote.** A importação de planilha gravava célula vazia como `0`; pacote
+  opcional `<= 0` fica de fora, e diária `<= 0` marca `missingPrice`, que a tela e o documento avisam.
+- **O histórico de preços** é o `EquipmentPrice`, escrito pelo gatilho `equipment_price_history` a
+  cada `INSERT` ou mudança de preço no `Equipment`, com `(now() AT TIME ZONE 'utc')`. A migration
+  `20260918150000_billing_by_contract` criou o gatilho, preencheu uma linha por equipamento e ligou os
+  substitutos já registrados pelo `AuditLog`.
+- **Extrato congelado.** O de contrato concluído é o gravado no fechamento, em `CONTRACT_COMPLETED`;
+  contrato fechado antes disso é calculado de novo.
+
+⚠️ **Interpretação a confirmar.** Contrato de diária prorroga diária a diária, cada uma pela tabela do
+dia (5ª). A leitura alternativa, todo dia além do primeiro a 10% do mensal, dá outro valor. O código
+segue a primeira, e o teste "o exemplo do Pedro" a fixa.
+
+| Rota | O que devolve |
+|---|---|
+| `GET /api/finantial/:id` | o extrato do contrato: pendente, o contratado; ativo, até hoje, como se tudo voltasse hoje; concluído, o gravado |
+| `GET /api/finantial?month=AAAA-MM` | o fechamento do mês: fechados com o que cobrar, ativos no fim do mês com o que correu, frota na obra, manutenções e roubos |
+| `POST /api/finantial/simulate` | a calculadora: equipamentos com a devolução e a ocorrência de cada um. Não grava nada |
+| `POST /api/generate/finantial/:id` · `POST /api/generate/closure/:id` · `POST /api/generate/finantial` | extrato do contrato ativo, baixa do concluído (cláusula 10ª) e fechamento do mês, em `.docx` |
 
 ---
 
@@ -216,8 +295,8 @@ rota que faltar e desfaz tudo no fim, inclusive quando quebra no meio.
 | `/api/client` | GET · GET/:id · POST · PUT/:id · DELETE/:id | valida CEP e CPF/CNPJ |
 | `/api/lessee` | GET · GET/:id · GET/lesseesbyclient/:clientId · POST · PUT/:id · DELETE/:id | |
 | `/api/elease` | GET · GET/:id · POST · POST/{start,close,cancel}/:id · PUT/{add,remove,status,replace}/:id | |
-| `/api/generate` | POST/{contract,finantial,closure}/:id | devolve `.docx` |
-| `/api/finantial/:id` | GET | ⚠️ só faz `console.log`, retorna `void` |
+| `/api/generate` | POST/{contract,finantial,closure}/:id · POST/finantial | devolve `.docx`: contrato, extrato, baixa e fechamento do mês |
+| `/api/finantial` | GET (`?month=AAAA-MM`) · GET/:id · POST/simulate | fechamento do mês, extrato do contrato e calculadora. Ver "Cobrança" |
 
 ---
 
@@ -315,37 +394,41 @@ referidos no corpo, de 400 para 404; contrato que não está pendente, ao pôr o
 
 ## 🚨 Pontos de atenção conhecidos
 
-1. `FinantialService.equipmentCurrentValue` calcula e faz `console.log`. Retorna `void`, nada chega
-   ao cliente.
-2. `DocumentService.generateFinantialReport`: `if (contract.leaseItems && !contract.leaseItems)` é
-   sempre falso, então a validação de "sem movimentação no período" nunca dispara.
-3. `Content-Disposition` dos três documentos usa `filename="contrato.docx"` fixo no fallback ASCII,
-   inclusive para relatório e fechamento.
-4. `PaginationConfig`: `numberFormatter(1, 10, limit)` dá **piso 10** e **teto ilimitado**.
-5. `ELeaseService.findAll` filtra `lesseeId` com `contains`/`insensitive` sobre um UUID.
-6. Limite de requisições por origem: 600/min geral e 30/min nas duas rotas de importação.
-7. `FormatService` lê o logo via `path.resolve(process.cwd(), ...)` em vez de `__dirname`, o que
+1. `PaginationConfig`: `numberFormatter(1, 10, limit)` dá **piso 10** e **teto ilimitado**.
+2. `ELeaseService.findAll` filtra `lesseeId` com `contains`/`insensitive` sobre um UUID.
+3. Limite de requisições por origem: 600/min geral e 30/min nas rotas caras (`HEAVY_ROUTE_LIMIT`):
+   importação de planilha, fechamento do mês, calculadora e documentos.
+4. `FormatService` lê o logo via `path.resolve(process.cwd(), ...)` em vez de `__dirname`, o que
    obriga o Dockerfile a copiar o asset para fora de `dist/`.
-8. `start:prod` aponta para `node dist/main`, que não existe. O caminho certo é `dist/src/main`.
-9. **Contrato com equipamento roubado não fecha.** `closeContract` recusa item `STOLEN`, a
-   substituição não fecha o item roubado e não há fluxo de indenização. O `FinantialService` conta
-   esse item até hoje, porque ele não tem `finishDate`.
-10. **`PUT /elease/remove/:id` não confere se o equipamento é do contrato.** Com o id de um
-    equipamento reservado em outro contrato responde 200: o `disconnect` não faz nada e o
-    `updateMany` devolve o equipamento a `AVAILABLE` ainda ligado ao outro contrato. A trava de "só
-    um equipamento" olha o total antes da remoção: tirar todos de uma vez deixa o contrato vazio.
-11. `LeaseItemAccessory` não guarda de qual equipamento veio. Adicionar equipamento a contrato não
-    fotografa os acessórios dele, e remover não tira.
-12. `EquipmentService.equipmentIsRented` só trava `LEASED`: equipamento `PENDING` (reservado) ou
-    `REPLACE` (substituto) pode ser editado, até de status, ou desativado com o contrato em curso.
-13. `FilterClientDTO.email` tem `@IsEmail()`: a busca por e-mail só aceita o endereço completo,
-    apesar do `contains` no service.
-14. `PrismaExceptionFilter` responde 500 `internal_error` a todo erro conhecido do Prisma que não seja
-    `P2002`. É o que chega quando um update condicionado ao status perde a corrida (start, cancel ou
-    close concorrentes) e quando `DELETE /client/:id` recebe um id que não existe.
+5. `start:prod` aponta para `node dist/main`, que não existe. O caminho certo é `dist/src/main`.
+6. **`PUT /elease/remove/:id` não confere se o equipamento é do contrato.** Com o id de um
+   equipamento reservado em outro contrato responde 200: o `disconnect` não faz nada e o
+   `updateMany` devolve o equipamento a `AVAILABLE` ainda ligado ao outro contrato. A trava de "só
+   um equipamento" olha o total antes da remoção: tirar todos de uma vez deixa o contrato vazio.
+7. `LeaseItemAccessory` não guarda de qual equipamento veio. Adicionar equipamento a contrato não
+   fotografa os acessórios dele, e remover não tira.
+8. `FilterClientDTO.email` tem `@IsEmail()`: a busca por e-mail só aceita o endereço completo,
+   apesar do `contains` no service.
+9. `PrismaExceptionFilter` responde 500 `internal_error` a todo erro conhecido do Prisma que não seja
+   `P2002`. É o que chega quando um update condicionado ao status perde a corrida (start, cancel ou
+   close concorrentes) e quando `DELETE /client/:id` recebe um id que não existe.
+10. **Começar contrato antes da data de início** deixa o item com a retirada no dia previsto e a
+    volta no dia real, antes dela. A conta cobra um dia, o mínimo, mas o documento mostra as duas
+    datas como estão.
+11. **Aviso de não prorrogação (5ª) não é registrado.** Contrato vencido e não devolvido conta como
+    prorrogado. Dano por mau uso (8ª), que segue cobrando até o conserto, também não tem registro.
 
 ### ✅ Já corrigidos
 
+- **Segunda rodada do pentest** (`PENTEST.md`, KR-11 a KR-16): contrato não nasce mais ativo ou
+  concluído pelo corpo da requisição; datas de contrato e da calculadora têm limite, e o motor tem teto,
+  porque um término em 9999 prendia a API inteira calculando; o cadastro de equipamento só grava
+  disponível, manutenção e roubado, e equipamento reservado, locado ou substituto só muda pelo contrato;
+  a importação de planilha só grava as colunas do cadastro; e as rotas caras têm limite de 30 por minuto.
+- **O financeiro não existia.** `FinantialService` só fazia `console.log`, o relatório por período
+  nunca validava nada, e contrato com equipamento roubado não fechava, sem volta nem indenização.
+  Agora a cobrança segue as cláusulas do contrato (ver "Cobrança"), o roubo tem volta e indenização,
+  e cada documento tem o próprio nome de arquivo no fallback ASCII.
 - **O front reconhecia o erro pela frase.** Eram 55 textos exatos e 6 expressões regulares, e o texto
   desconhecido aparecia cru na tela. Agora todo erro sai com código (ver "Contrato de erro") e o front
   nunca mostra `message`. O filtro de validação do Prisma, que devolvia ao cliente a última linha da
@@ -387,7 +470,17 @@ referidos no corpo, de 400 para 404; contrato que não está pendente, ao pôr o
 
 ## ✅ Invariantes ao alterar
 
-- Preço de contrato **nunca** vem do `Equipment`: use o snapshot em `LeaseItem`.
+- Preço de contrato **nunca** vem do `Equipment` de agora: o do período sai do snapshot em
+  `LeaseItem` (7ª), e o de prorrogação, excedente e indenização, do `EquipmentPrice` na data (5ª e 7ª).
+- A conta é a do motor em `routes/finantial/billing/`, coberta pelo `billing.spec.ts`. Tela e
+  documento só escrevem o que ele devolve.
+- Data que chega do corpo tem limite (`global/validators/dateRange.validators.ts`): a conta percorre
+  cada dia do período, no mesmo processo que atende todo o resto.
+- Situação e data de fechamento de contrato não vêm do corpo; o cadastro de equipamento só grava
+  `AVAILABLE`, `MAINTENANCE` e `STOLEN`. O resto é do ciclo do contrato.
+- DTO não declara campo que o servidor controla, e service não espalha linha de planilha no Prisma: o
+  `whitelist` só barra o que o DTO não declara.
+- Rota cara leva `@Throttle(HEAVY_ROUTE_LIMIT)`.
 - Erro sai com código do catálogo `global/error/apiError.ts`. `message` não leva valor da requisição nem
   detalhe interno; valor que a tela mostra vai em membro próprio.
 - Transição de status acontece em `$transaction`, junto do `AuditLog`.
@@ -396,7 +489,7 @@ referidos no corpo, de 400 para 404; contrato que não está pendente, ao pôr o
 - Endereço de cliente e obra sai de `zipcodeAddress`: a base de CEP vence, o que ela deixa vazio vem
   do corpo (`||`, nunca `??`), e a conferência é contra a base, nunca contra o endereço gravado.
 - Operação de contrato sobre equipamento confere o `eleaseId` do próprio contrato, não só o status.
-  O `remove` ainda não confere: ver o ponto de atenção 10.
+  O `remove` ainda não confere: ver o ponto de atenção 6.
 - Rota nova exige `Route` + `Permission` no SSO, senão responde 404.
 - O **refresh token** nunca chega ao navegador. O access token chega, e só por `GET /auth/token`
   (RFC 10017 §6.2.2.1). Os dois ficam no cookie de sessão, cifrado.

@@ -1,13 +1,48 @@
-import { Controller, Get, HttpCode, HttpStatus, Param } from '@nestjs/common';
-import { FinantialService } from '../service/finantial.service';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Post,
+  Query,
+} from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
+import { HEAVY_ROUTE_LIMIT } from 'src/global/utils/throttle';
+import { currentMonth } from '../billing/calendar';
+import { StatementDto } from '../billing/statement';
+import { ClosingQueryDto } from '../dto/closingQuery.dto';
+import { SimulationDto } from '../dto/simulation.dto';
+import { BillingService } from '../service/billing.service';
 
 @Controller('finantial')
 export class FinantialController {
-  constructor(private finantialService: FinantialService) {}
+  constructor(private billing: BillingService) {}
 
+  /** O fechamento do mes: `?month=AAAA-MM`, ou o mes corrente. */
+  @Get()
+  @HttpCode(HttpStatus.OK)
+  @Throttle(HEAVY_ROUTE_LIMIT)
+  async closing(@Query() query: ClosingQueryDto) {
+    return await this.billing.closing(query.month ?? currentMonth());
+  }
+
+  /**
+   * A calculadora de contrato. E `POST` porque leva equipamentos e eventos no
+   * corpo; nao grava nada.
+   */
+  @Post('simulate')
+  @HttpCode(HttpStatus.OK)
+  @Throttle(HEAVY_ROUTE_LIMIT)
+  async simulate(@Body() body: SimulationDto): Promise<StatementDto> {
+    return await this.billing.simulate(body);
+  }
+
+  /** O extrato de um contrato: contratado, o que correu e, fechado, o cobrado. */
   @Get(':id')
   @HttpCode(HttpStatus.OK)
-  async equipmentCurrentValue(@Param('id') id: string): Promise<void> {
-    return await this.finantialService.equipmentCurrentValue(id);
+  async statement(@Param('id') id: string): Promise<StatementDto> {
+    return await this.billing.statement(id);
   }
 }
