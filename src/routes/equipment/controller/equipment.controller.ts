@@ -62,6 +62,14 @@ export class EquipmentController {
     return await this.equipmentService.importCsv(file);
   }
 
+  // Desativado nao se edita: reativar e o caminho de volta, e devolve a unidade
+  // a frota como disponivel.
+  @Post('reactivate/:id')
+  @HttpCode(HttpStatus.OK)
+  async reactivateEquipment(@Param('id') id: string): Promise<Equipment> {
+    return await this.equipmentService.reactivateEquipment(id);
+  }
+
   @Put(':id')
   @HttpCode(HttpStatus.OK)
   async editEquipment(

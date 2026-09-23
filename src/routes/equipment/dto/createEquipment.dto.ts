@@ -37,8 +37,18 @@ export class CreateEquipmentDto {
   @IsNotEmpty()
   p_indemnity: number;
 
-  // Reservado, locado e substituto sao do contrato; desativado e o DELETE.
+  /*
+   * Reservado, locado e substituto sao do contrato; desativado e o DELETE, e so
+   * a reativacao tira dele.
+   *
+   * Sem valor padrao aqui de proposito: o `PartialType` do `EditEquipmentDto`
+   * herda o inicializador desta classe, e um `AVAILABLE` padrao chegava ao
+   * `update` em toda edicao que nao mandasse a situacao. Mexer no nome de um
+   * equipamento em manutencao o deixava disponivel, e um desativado voltava
+   * calado a frota. Sem ela, o cadastro nasce disponivel pelo padrao da coluna e
+   * a edicao mantem a situacao gravada.
+   */
+  @IsOptional()
   @IsIn(EDITABLE_STATUSES)
-  @IsNotEmpty()
-  status: StatusEquipment = StatusEquipment.AVAILABLE;
+  status?: StatusEquipment;
 }

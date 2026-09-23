@@ -86,6 +86,14 @@ export const API_ERRORS = {
     status: HttpStatus.BAD_REQUEST,
     message: 'Some equipment is not available',
   },
+  equipment_retired: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Retired equipment only comes back by reactivation',
+  },
+  equipment_not_retired: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'The equipment is not retired',
+  },
   equipment_reserved: {
     status: HttpStatus.BAD_REQUEST,
     message: 'Some equipment was already reserved',

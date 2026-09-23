@@ -175,8 +175,13 @@ export class EquipmentService {
 
   async editEquipment(id: string, data: EditEquipmentDto): Promise<Equipment> {
     const updateData: EditEquipmentDto = { ...data };
+    const equipment = await this.outOfContract(id);
 
-    await this.equipmentIsRented(id);
+    // Desativado volta a frota so pela reativacao. Sem isto, o cadastro seria o
+    // caminho de volta: bastava gravar qualquer situacao do cadastro.
+    if (equipment.status === StatusEquipment.RETIRED) {
+      throw new ApiException('equipment_retired');
+    }
 
     if (data.code) {
       updateData.code = validateCode(data.code);
@@ -189,26 +194,54 @@ export class EquipmentService {
   }
 
   async deleteEquipment(id: string): Promise<void> {
-    await this.equipmentIsRented(id);
+    await this.outOfContract(id);
     await this.prisma.equipment.update({
       where: { id },
       data: { status: StatusEquipment.RETIRED },
     });
   }
 
-  /** Equipamento em contrato, reservado, locado ou substituto, so muda pelo contrato. */
-  private async equipmentIsRented(id: string): Promise<void> {
-    const findEquipment = await this.prisma.equipment.findUnique({
-      where: {
-        id,
-        status: {
-          notIn: CONTRACT_STATUSES,
-        },
-      },
+  /**
+   * O caminho de volta do desativado, e o unico: ele volta a frota disponivel.
+   * Reativar o que nao esta desativado nao e reativacao, e mudanca de situacao
+   * pelo cadastro, que tem as regras dele.
+   */
+  async reactivateEquipment(id: string): Promise<Equipment> {
+    const equipment = await this.prisma.equipment.findUnique({ where: { id } });
+
+    if (!equipment) {
+      throw new ApiException('equipment_not_found');
+    }
+
+    if (equipment.status !== StatusEquipment.RETIRED) {
+      throw new ApiException('equipment_not_retired');
+    }
+
+    // Condicionado a situacao: de duas reativacoes ao mesmo tempo, so uma vale.
+    const reactivated = await this.prisma.equipment.updateMany({
+      where: { id, status: StatusEquipment.RETIRED },
+      data: { status: StatusEquipment.AVAILABLE },
     });
 
-    if (!findEquipment) {
+    if (reactivated.count !== 1) {
+      throw new ApiException('equipment_not_retired');
+    }
+
+    return this.findById(id);
+  }
+
+  /** Equipamento em contrato, reservado, locado ou substituto, so muda pelo contrato. */
+  private async outOfContract(id: string): Promise<Equipment> {
+    const equipment = await this.prisma.equipment.findUnique({ where: { id } });
+
+    if (!equipment) {
+      throw new ApiException('equipment_not_found');
+    }
+
+    if (CONTRACT_STATUSES.includes(equipment.status)) {
       throw new ApiException('equipment_leased');
     }
+
+    return equipment;
   }
 }

@@ -30,7 +30,7 @@ npm run start:dev
 npm run build
 npm run lint
 npm run test:sso        # ponta a ponta contra a stack de pé, 94 asserções
-npx jest                # unidade: cobrança pelas cláusulas, contrato de erro, validação e filtros do Prisma
+npx jest                # unidade: cobrança, contrato de erro, filtros do Prisma, e as regras de situação do equipamento e da associação de acessório
 npx prisma migrate dev
 ```
 
@@ -141,6 +141,20 @@ tabela **em vigor na data**, que sai do `EquipmentPrice`. Ver "Cobrança".
 
 Enums: `StatusEquipment` (AVAILABLE · LEASED · MAINTENANCE · RETIRED · STOLEN · PENDING · REPLACE),
 `LeaseStatus` (PENDING · ACTIVE · COMPLETED · CANCELLED), `AuditAction`.
+
+### 🔧 Quem muda a situação do equipamento
+
+Três donos, e nenhum invade o do outro:
+
+| Situação | Quem grava |
+|---|---|
+| `AVAILABLE` · `MAINTENANCE` · `STOLEN` | o cadastro (`POST /equipment`, `PUT /equipment/:id`) e a volta do contrato |
+| `PENDING` · `LEASED` · `REPLACE` | só o contrato, que muda o equipamento junto com o item dele. O cadastro recusa editar e desativar nessas três (`equipment_leased`) |
+| `RETIRED` | a baixa, `DELETE /equipment/:id`. Desativado não se edita (`equipment_retired`) e só volta à frota por `POST /equipment/reactivate/:id`, que o devolve disponível |
+
+**Desativar é baixa, não mais um estado do cadastro.** Sem o caminho separado de volta, bastava gravar
+qualquer situação do cadastro para uma unidade baixada voltar a entrar em contrato — e, enquanto o
+`EditEquipmentDto` herdou o padrão `AVAILABLE` do cadastro, bastava editar o nome dela.
 
 ---
 
@@ -290,7 +304,7 @@ rota que faltar e desfaz tudo no fim, inclusive quando quebra no meio.
 | `/api/health` | GET | `@SsoPublic()`, healthcheck do container |
 | `/api/auth/*` | GET · POST | instaladas pela biblioteca. O `callback` devolve documento, não `302` |
 | `/api/home` | GET | `@SsoAuthenticated()`, devolve o estado da sessão para o front |
-| `/api/equipment` | GET · GET/:id · POST · POST/upload · PUT/:id · DELETE/:id | delete = soft (`RETIRED`) |
+| `/api/equipment` | GET · GET/:id · POST · POST/upload · POST/reactivate/:id · PUT/:id · DELETE/:id | delete = soft (`RETIRED`); reativar é o único caminho de volta |
 | `/api/accessory` | GET · GET/:id · POST · POST/upload · POST/associate · PUT/:id · DELETE/:id | |
 | `/api/client` | GET · GET/:id · POST · PUT/:id · DELETE/:id | valida CEP e CPF/CNPJ |
 | `/api/lessee` | GET · GET/:id · GET/lesseesbyclient/:clientId · POST · PUT/:id · DELETE/:id | |
@@ -394,7 +408,7 @@ referidos no corpo, de 400 para 404; contrato que não está pendente, ao pôr o
 
 ## 🚨 Pontos de atenção conhecidos
 
-1. `PaginationConfig`: `numberFormatter(1, 10, limit)` dá **piso 10** e **teto ilimitado**.
+1. `PaginationConfig`: `numberFormatter(1, 10, limit)` dá **piso 10**, e o `MAX_LIMIT` corta em **500**.
 2. `ELeaseService.findAll` filtra `lesseeId` com `contains`/`insensitive` sobre um UUID.
 3. Limite de requisições por origem: 600/min geral e 30/min nas rotas caras (`HEAVY_ROUTE_LIMIT`):
    importação de planilha, fechamento do mês, calculadora e documentos.
@@ -420,6 +434,23 @@ referidos no corpo, de 400 para 404; contrato que não está pendente, ao pôr o
 
 ### ✅ Já corrigidos
 
+- **Desativar não era baixa.** Equipamento `RETIRED` voltava à frota pela edição, como qualquer troca
+  de situação. Agora o cadastro recusa editar desativado (`equipment_retired`) e a volta é
+  `POST /equipment/reactivate/:id`, que só aceita quem está desativado (`equipment_not_retired`) e o
+  devolve disponível, com o `updateMany` condicionado à situação. Ver "Quem muda a situação do
+  equipamento".
+- **Edição de equipamento sem `status` gravava `AVAILABLE`.** O `PartialType` herda os
+  inicializadores da classe de origem, e o `ValidationPipe` roda com `transform: true`: o
+  `status = AVAILABLE` do `CreateEquipmentDto` chegava ao `update` em toda edição que não mandasse a
+  situação. Mexer no nome de uma unidade em manutenção a deixava disponível. O cadastro não tem mais
+  padrão no DTO — quem dá o `AVAILABLE` de fábrica é o `@default` da coluna —, e há teste de
+  regressão em `editEquipment.dto.spec.ts`.
+- **Associar acessório aceitava qualquer unidade.** A trava de "só equipamento disponível" morava no
+  `where` de um `findMany`, cujo retorno é sempre array: `if (!equipment)` nunca era verdade.
+  Acessório entrava em unidade reservada, locada ou desativada, e saía para a obra sem estar em
+  contrato nenhum — o contrato fotografa os acessórios quando reserva a unidade. Agora a situação é
+  conferida de verdade (`equipment_unavailable`), o id repetido vale uma vez, e o `updateMany` do
+  estoque confere quantas linhas mudou, contra duas associações levando a mesma última unidade.
 - **Segunda rodada do pentest** (`PENTEST.md`, KR-11 a KR-16): contrato não nasce mais ativo ou
   concluído pelo corpo da requisição; datas de contrato e da calculadora têm limite, e o motor tem teto,
   porque um término em 9999 prendia a API inteira calculando; o cadastro de equipamento só grava
@@ -478,6 +509,13 @@ referidos no corpo, de 400 para 404; contrato que não está pendente, ao pôr o
   cada dia do período, no mesmo processo que atende todo o resto.
 - Situação e data de fechamento de contrato não vêm do corpo; o cadastro de equipamento só grava
   `AVAILABLE`, `MAINTENANCE` e `STOLEN`. O resto é do ciclo do contrato.
+- **DTO de edição não herda valor padrão.** `PartialType` copia os inicializadores da classe de
+  origem, e com `transform: true` eles chegam ao `update` como se tivessem sido enviados. Campo que o
+  servidor controla tem padrão na coluna, não no DTO.
+- Desativado só volta por `POST /equipment/reactivate/:id`, e volta disponível. O cadastro não tira
+  ninguém do desativado.
+- Acessório só entra em equipamento `AVAILABLE`: depois de reservado, o contrato já fotografou os
+  acessórios da unidade.
 - DTO não declara campo que o servidor controla, e service não espalha linha de planilha no Prisma: o
   `whitelist` só barra o que o DTO não declara.
 - Rota cara leva `@Throttle(HEAVY_ROUTE_LIMIT)`.

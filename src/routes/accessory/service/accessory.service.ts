@@ -120,17 +120,16 @@ export class AccessoryService {
   public async associateEquipmentsToAccessory(
     data: AssociateEquipmentAccessory,
   ): Promise<EquipmentAccessoryCreated> {
+    // O mesmo acessorio repetido tiraria uma unidade por vez do estoque e
+    // esbarraria na chave composta. Vale uma vez.
+    const accessoryIds = [...new Set(data.accessoryIds)];
+
     const [equipment, accessories] = await Promise.all([
-      this.prisma.equipment.findMany({
-        where: {
-          id: data.equipmentId,
-          status: StatusEquipment.AVAILABLE,
-        },
-      }),
+      this.prisma.equipment.findUnique({ where: { id: data.equipmentId } }),
 
       this.prisma.accessory.findMany({
         where: {
-          id: { in: data.accessoryIds },
+          id: { in: accessoryIds },
           quantity: { gt: 0 },
         },
       }),
@@ -140,27 +139,43 @@ export class AccessoryService {
       throw new ApiException('equipment_not_found');
     }
 
-    if (accessories.length < data.accessoryIds.length) {
+    /*
+     * So unidade disponivel recebe acessorio. A conferencia existia no `where` de
+     * um `findMany`, cujo retorno e sempre um array: `if (!equipment)` nunca era
+     * verdade, e acessorio entrava em unidade reservada, locada ou desativada. O
+     * contrato fotografa os acessorios quando reserva a unidade, entao o que
+     * entrasse depois sairia para a obra sem estar em contrato nenhum.
+     */
+    if (equipment.status !== StatusEquipment.AVAILABLE) {
+      throw new ApiException('equipment_unavailable');
+    }
+
+    if (accessories.length < accessoryIds.length) {
       throw new ApiException('accessories_unavailable');
     }
 
     const createEquipmentAccessory = await this.prisma.$transaction(
       async (tx: Prisma.TransactionClient) => {
-        const [, createAssociation] = await Promise.all([
+        const [estoque, createAssociation] = await Promise.all([
           tx.accessory.updateMany({
-            where: { id: { in: data.accessoryIds }, quantity: { gt: 0 } },
+            where: { id: { in: accessoryIds }, quantity: { gt: 0 } },
             data: {
               quantity: { decrement: 1 },
             },
           }),
 
           tx.equipmentAccessory.createMany({
-            data: data.accessoryIds.map((ids) => ({
+            data: accessoryIds.map((ids) => ({
               equipmentId: data.equipmentId,
               accessoryId: ids,
             })),
           }),
         ]);
+
+        // Outra associacao levou a ultima unidade entre a conferencia e aqui.
+        if (estoque.count !== accessoryIds.length) {
+          throw new ApiException('accessories_unavailable');
+        }
 
         return createAssociation;
       },
