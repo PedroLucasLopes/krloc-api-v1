@@ -1,0 +1,27 @@
+# Contexto de build do krloc: so esta pasta. Tudo o que fica aqui vai ao daemon.
+node_modules
+dist
+generated
+coverage
+.git
+*.log
+*.tsbuildinfo
+
+# Segredos. O .npmrc fica: ele so diz onde buscar, e o token chega como secret.
+.env
+.env.*
+!.env.example
+
+# O teste ponta a ponta roda da maquina, contra a stack de pe.
+test
+
+# Ferramental e documentacao
+.vscode
+.idea
+.postman
+CLAUDE.md
+AGENTS.md
+README.md
+Dockerfile
+.dockerignore
+docker-compose.yml

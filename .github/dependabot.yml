@@ -1,0 +1,23 @@
+# Atualizacoes automaticas, uma vez por semana, em pull request.
+#
+# As actions do pipeline sao fixadas por commit: sem isto, a versao fixada
+# envelheceria calada, com as correcoes de seguranca de fora.
+#
+# O npm fica de fora: @pedrolucaslopes/* vem do GitHub Packages, e o Dependabot
+# so chega la com um token proprio (secret do Dependabot, nao das Actions). Com
+# ele, acrescente um `registries` de `npm-registry` e o ecossistema `npm`.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # A imagem base recebe correcao de seguranca pela tag, que fica a mesma.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

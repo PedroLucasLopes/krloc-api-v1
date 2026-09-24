@@ -1,0 +1,207 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Equipment {
+  id                   String               @id @default(uuid())
+  name                 String
+  code                 String
+  p_diary              Float
+  p_weekly             Float?
+  p_biweekly           Float?
+  p_monthly            Float?
+  p_indemnity          Float
+  status               StatusEquipment      @default(AVAILABLE)
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+  suffix               Int                  @unique @default(autoincrement())
+  eleaseId             String?
+  elease               ELease?              @relation(fields: [eleaseId], references: [id])
+  equipmentAccessories EquipmentAccessory[]
+  leaseItems           LeaseItem[]
+  prices               EquipmentPrice[]
+
+  @@index([status])
+  @@index([eleaseId])
+}
+
+/// Tabela de precos em vigor ao longo do tempo. O contrato cobra a prorrogacao
+/// pela tabela em vigor no vencimento (clausula 5a), o dia excedente pelo valor
+/// mensal atual (paragrafo unico) e a indenizacao pelo preco do dia do pagamento
+/// (7a). Sem historico, a mesma conta refeita depois de uma troca de preco sairia
+/// outra. Quem escreve e o gatilho `equipment_price_history`, na criacao do
+/// equipamento e a cada mudanca de preco, por qualquer caminho.
+model EquipmentPrice {
+  id          String    @id @default(uuid())
+  equipmentId String
+  p_diary     Float
+  p_weekly    Float?
+  p_biweekly  Float?
+  p_monthly   Float?
+  p_indemnity Float
+  validFrom   DateTime
+  equipment   Equipment @relation(fields: [equipmentId], references: [id])
+
+  @@index([equipmentId, validFrom])
+}
+
+model Accessory {
+  id                   String               @id @default(uuid())
+  name                 String
+  quantity             Int
+  p_indemnity          Float
+  equipments           EquipmentAccessory[]
+  leaseItemAccessories LeaseItemAccessory[]
+}
+
+model EquipmentAccessory {
+  equipmentId String
+  accessoryId String
+  accessory   Accessory @relation(fields: [accessoryId], references: [id])
+  equipment   Equipment @relation(fields: [equipmentId], references: [id])
+
+  @@id([equipmentId, accessoryId])
+  @@index([equipmentId])
+  @@index([accessoryId])
+}
+
+model Client {
+  id           String   @id @default(uuid())
+  name         String
+  email        String?  @unique
+  phone        String?
+  tax_id       String   @unique
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  address      String
+  city         String
+  country      String?
+  neighborhood String?
+  number       Int?
+  state        String?
+  zipcode      String
+  lessees      Lessee[]
+}
+
+model Lessee {
+  id           String   @id @default(uuid())
+  name         String
+  address      String
+  zipcode      String
+  city         String
+  country      String?
+  clientId     String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  neighborhood String?
+  state        String?
+  number       Int?
+  eleases      ELease[]
+  client       Client   @relation(fields: [clientId], references: [id])
+}
+
+model ELease {
+  id                   String               @id @default(uuid())
+  lesseeId             String
+  startDate            DateTime
+  endDate              DateTime
+  finishDate           DateTime?
+  status               LeaseStatus          @default(PENDING)
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+  contract_generated   DateTime?
+  auditLogs            AuditLog[]
+  lessee               Lessee               @relation(fields: [lesseeId], references: [id])
+  equipments           Equipment[]
+  leaseItems           LeaseItem[]
+  leaseItemAccessories LeaseItemAccessory[]
+}
+
+model LeaseItem {
+  id                String           @id @default(uuid())
+  contractId        String
+  equipmentId       String
+  equipmentName     String
+  equipmentCode     String
+  equipmentSuffix   Int
+  p_diary           Float
+  p_weekly          Float?
+  p_biweekly        Float?
+  p_monthly         Float?
+  p_indemnity       Float
+  startDate         DateTime
+  finishDate        DateTime?
+  startStatus       StatusEquipment
+  finalStatus       StatusEquipment?
+  createdAt         DateTime         @default(now())
+  finantialReportId String?
+  /// O item que este substitui, no mesmo contrato. A posicao do equipamento e a
+  /// cadeia original -> substitutos, cobrada como um aluguel so.
+  replacesItemId    String?          @unique
+  replaces          LeaseItem?       @relation("LeaseItemReplacement", fields: [replacesItemId], references: [id])
+  replacedBy        LeaseItem?       @relation("LeaseItemReplacement")
+  contract          ELease           @relation(fields: [contractId], references: [id])
+  equipment         Equipment        @relation(fields: [equipmentId], references: [id])
+
+  @@unique([contractId, equipmentId])
+  @@index([contractId])
+  @@index([equipmentId])
+}
+
+model LeaseItemAccessory {
+  id          String    @id @default(uuid())
+  name        String
+  p_indemnity Float
+  accessoryId String
+  contractId  String
+  accessory   Accessory @relation(fields: [accessoryId], references: [id])
+  contract    ELease    @relation(fields: [contractId], references: [id])
+
+  @@index([accessoryId])
+}
+
+model AuditLog {
+  id          String      @id @default(uuid())
+  contractId  String
+  action      AuditAction
+  description String?
+  metadata    Json?
+  createdAt   DateTime    @default(now())
+  contract    ELease      @relation(fields: [contractId], references: [id])
+
+  @@index([contractId])
+}
+
+enum StatusEquipment {
+  AVAILABLE
+  LEASED
+  MAINTENANCE
+  RETIRED
+  STOLEN
+  PENDING
+  REPLACE
+}
+
+enum LeaseStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
+  PENDING
+}
+
+enum AuditAction {
+  CONTRACT_CREATED
+  CONTRACT_STARTED
+  CONTRACT_CANCELLED
+  CONTRACT_COMPLETED
+  EQUIPMENT_ADDED
+  EQUIPMENT_REMOVED
+  EQUIPMENT_STATUS_CHANGED
+  EQUIPMENT_REPLACE
+}

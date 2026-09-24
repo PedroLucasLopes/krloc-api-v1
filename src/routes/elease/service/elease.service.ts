@@ -1,0 +1,1046 @@
+import { Injectable } from '@nestjs/common';
+import {
+  AuditAction,
+  ELease,
+  LeaseStatus,
+  Prisma,
+  StatusEquipment,
+} from 'generated/prisma/client';
+import { PrismaService } from 'src/global/prisma/prisma.service';
+import { FilterELeaseDto } from '../dto/filterELease.dto';
+import { PaginationConfig } from 'src/global/utils/pagination.utils';
+import { CreateELeaseDto } from '../dto/createELease.dto';
+import { CustomEquipmentInContract } from '../dto/customEquipmentInContract.dto';
+import { Equipment } from 'generated/prisma/client';
+import { EquipmentsEditStatus } from '../dto/equipmentsEditStatus.dto';
+import { ReplaceEquipmentDto } from '../dto/replaceEquipment.dto';
+import { LeaseItemAccessoryData } from '../types/leaseItemAccessoryData';
+import { EquipmentWithAccessories } from '../types/equipmentWithAccessories';
+import { ApiException } from 'src/global/error/apiError';
+import { BillingService } from 'src/routes/finantial/service/billing.service';
+import { statementToApi } from 'src/routes/finantial/billing/statement';
+
+@Injectable()
+export class ELeaseService {
+  constructor(
+    private prisma: PrismaService,
+    private billing: BillingService,
+  ) {}
+
+  async findAll(filter: FilterELeaseDto): Promise<ELease[]> {
+    const { page, limit } = PaginationConfig(filter);
+    const elease = await this.prisma.eLease.findMany({
+      where: {
+        ...(filter?.lesseeId && {
+          lesseeId: { contains: filter.lesseeId, mode: 'insensitive' },
+        }),
+        ...(filter?.startDate && {
+          startDate: { equals: new Date(filter.startDate) },
+        }),
+        ...(filter?.endDate && {
+          endDate: { equals: new Date(filter.endDate) },
+        }),
+        ...(filter?.status && {
+          status: { equals: filter.status },
+        }),
+        ...(filter?.equipmentName && {
+          equipments: {
+            some: {
+              name: {
+                contains: filter.equipmentName,
+                mode: 'insensitive',
+              },
+            },
+          },
+        }),
+      },
+      include: {
+        lessee: {
+          include: { client: true },
+        },
+        leaseItems: true,
+        leaseItemAccessories: true,
+      },
+      ...(filter?.order && {
+        orderBy: { startDate: filter.order },
+      }),
+      skip: page,
+      take: limit,
+    });
+
+    if (elease.length === 0) {
+      throw new ApiException('no_results');
+    }
+
+    return elease;
+  }
+
+  async findById(id: string): Promise<ELease> {
+    const foundELease = await this.prisma.eLease.findUnique({
+      where: { id },
+      include: {
+        lessee: {
+          include: { client: true },
+        },
+        leaseItems: true,
+        leaseItemAccessories: true,
+      },
+    });
+
+    if (!foundELease) {
+      throw new ApiException('contract_not_found');
+    }
+
+    return foundELease;
+  }
+
+  async createELease(data: CreateELeaseDto): Promise<ELease> {
+    const { equipments, ...leaseData } = data;
+    const equipmentsFound = await this.prisma.equipment.findMany({
+      where: {
+        id: { in: equipments },
+        status: StatusEquipment.AVAILABLE,
+      },
+      include: {
+        equipmentAccessories: {
+          include: {
+            accessory: {
+              select: {
+                id: true,
+                name: true,
+                p_indemnity: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    const checkLesseeId = await this.prisma.lessee.findUnique({
+      where: { id: leaseData.lesseeId },
+    });
+
+    if (!checkLesseeId) {
+      throw new ApiException('lessee_not_found');
+    }
+
+    if (equipmentsFound.length < equipments.length) {
+      throw new ApiException('equipment_unavailable');
+    }
+
+    const buildAccessoryData = (
+      equipmentsFound: EquipmentWithAccessories[],
+      contractId: string,
+    ): LeaseItemAccessoryData[] =>
+      equipmentsFound.flatMap(({ equipmentAccessories }) => {
+        return equipmentAccessories.map(({ accessoryId, accessory }) => ({
+          contractId,
+          accessoryId,
+          name: accessory.name,
+          p_indemnity: accessory.p_indemnity,
+        }));
+      });
+
+    const createLease = await this.prisma.$transaction(
+      async (tx: Prisma.TransactionClient) => {
+        if (checkLesseeId && equipmentsFound.length === equipments.length) {
+          const createLease = await tx.eLease.create({
+            data: {
+              ...leaseData,
+              lesseeId: checkLesseeId.id,
+            },
+          });
+
+          const updated = await tx.equipment.updateMany({
+            where: {
+              id: { in: equipments },
+              status: StatusEquipment.AVAILABLE,
+            },
+            data: {
+              status: StatusEquipment.PENDING,
+              eleaseId: createLease.id,
+            },
+          });
+
+          if (updated.count !== equipments.length) {
+            throw new ApiException('equipment_reserved');
+          }
+
+          await tx.auditLog.create({
+            data: {
+              contractId: createLease.id,
+              action: AuditAction.CONTRACT_CREATED,
+              description: `Contract for ${checkLesseeId.name} created`,
+              metadata: {
+                equipments,
+                lesseeId: checkLesseeId.id,
+                lesseeName: checkLesseeId.name,
+                clientId: checkLesseeId.clientId,
+                startDate: createLease.startDate,
+                endDate: createLease.endDate,
+              },
+            },
+          });
+
+          await tx.leaseItem.createMany({
+            data: equipmentsFound.map((equipment) => ({
+              contractId: createLease.id,
+              equipmentId: equipment.id,
+              equipmentName: equipment.name,
+              equipmentCode: equipment.code,
+              equipmentSuffix: equipment.suffix,
+              p_diary: equipment.p_diary,
+              p_weekly: equipment.p_weekly,
+              p_biweekly: equipment.p_biweekly,
+              p_monthly: equipment.p_monthly,
+              p_indemnity: equipment.p_indemnity,
+              startDate: leaseData.startDate,
+              startStatus: StatusEquipment.PENDING,
+            })),
+          });
+
+          if (buildAccessoryData.length > 0) {
+            await tx.leaseItemAccessory.createMany({
+              data: buildAccessoryData(equipmentsFound, createLease.id),
+            });
+          }
+
+          return createLease;
+        }
+      },
+    );
+
+    if (!createLease) {
+      throw new ApiException('internal_error');
+    }
+
+    return createLease;
+  }
+
+  async startContract(id: string): Promise<ELease> {
+    const startContract = await this.prisma.$transaction(
+      async (tx: Prisma.TransactionClient) => {
+        const lease = await tx.eLease.findUnique({
+          where: {
+            id,
+            status: LeaseStatus.PENDING,
+          },
+          include: {
+            equipments: {
+              where: {
+                status: {
+                  not: StatusEquipment.PENDING,
+                },
+              },
+              select: { id: true, status: true },
+            },
+            lessee: { select: { name: true, clientId: true } },
+          },
+        });
+
+        if (!lease) {
+          throw new ApiException('contract_not_found');
+        }
+
+        if (lease.status !== LeaseStatus.PENDING) {
+          throw new ApiException('contract_in_state', { status: lease.status });
+        }
+
+        if (lease.equipments.length > 0) {
+          throw new ApiException('contract_equipment_not_reserved');
+        }
+
+        if (lease.contract_generated === null) {
+          throw new ApiException('contract_document_missing');
+        }
+
+        const contracted = statementToApi(
+          await this.billing.compute(
+            await this.billing.contract(id, tx),
+            new Date(),
+            tx,
+          ),
+        );
+
+        const [start, ,] = await Promise.all([
+          tx.eLease.update({
+            where: { id, status: LeaseStatus.PENDING },
+            data: { status: LeaseStatus.ACTIVE },
+          }),
+
+          tx.equipment.updateMany({
+            where: {
+              eleaseId: { equals: id },
+              status: StatusEquipment.PENDING,
+            },
+            data: { status: StatusEquipment.LEASED },
+          }),
+
+          tx.auditLog.create({
+            data: {
+              contractId: id,
+              action: AuditAction.CONTRACT_STARTED,
+              description: `Contract for ${lease.lessee.name} started`,
+              metadata: {
+                contractId: id,
+                reason: LeaseStatus.ACTIVE,
+                plannedDays: contracted.plannedDays,
+                contracted: contracted.totals.contracted,
+                positions: contracted.positions.map((position) => ({
+                  units: position.units.map((unit) => unit.code),
+                  contracted: position.contracted,
+                })),
+              },
+            },
+          }),
+
+          tx.leaseItem.updateMany({
+            where: {
+              contractId: { equals: id },
+              startStatus: StatusEquipment.PENDING,
+            },
+            data: {
+              startStatus: StatusEquipment.LEASED,
+            },
+          }),
+        ]);
+
+        return start;
+      },
+    );
+
+    if (!startContract) {
+      throw new ApiException('internal_error');
+    }
+
+    return startContract;
+  }
+
+  async cancelContract(id: string): Promise<ELease> {
+    const cancelContract = await this.prisma.$transaction(
+      async (tx: Prisma.TransactionClient) => {
+        const checkContract = await tx.eLease.findUnique({
+          where: { id },
+          include: {
+            equipments: {
+              where: {
+                status: {
+                  not: StatusEquipment.PENDING,
+                },
+              },
+              select: { id: true },
+            },
+            lessee: {
+              select: { id: true, name: true, clientId: true },
+            },
+          },
+        });
+
+        if (!checkContract) {
+          throw new ApiException('contract_not_found');
+        }
+
+        if (checkContract.status !== LeaseStatus.PENDING) {
+          throw new ApiException('contract_in_state', {
+            status: checkContract.status,
+          });
+        }
+
+        if (checkContract.equipments.length > 0) {
+          throw new ApiException('contract_equipment_not_reserved');
+        }
+
+        const cancelledAt = new Date();
+
+        const [, updatedLease] = await Promise.all([
+          tx.equipment.updateMany({
+            where: {
+              eleaseId: { equals: id },
+              status: StatusEquipment.PENDING,
+            },
+            data: {
+              status: StatusEquipment.AVAILABLE,
+              eleaseId: null,
+            },
+          }),
+
+          tx.eLease.update({
+            where: { id, status: LeaseStatus.PENDING },
+            data: {
+              status: LeaseStatus.CANCELLED,
+              finishDate: cancelledAt,
+            },
+          }),
+
+          tx.auditLog.create({
+            data: {
+              contractId: id,
+              action: AuditAction.CONTRACT_CANCELLED,
+              description: `Contract for ${checkContract.lessee.name} is canceled`,
+              metadata: {
+                contractId: id,
+                reason: LeaseStatus.CANCELLED,
+              },
+            },
+          }),
+
+          tx.leaseItem.updateMany({
+            where: {
+              contractId: { equals: id },
+              startStatus: StatusEquipment.PENDING,
+            },
+            data: {
+              finalStatus: StatusEquipment.AVAILABLE,
+              finishDate: cancelledAt,
+            },
+          }),
+        ]);
+
+        return updatedLease;
+      },
+    );
+
+    return cancelContract;
+  }
+
+  async addEquipmentsToELease(
+    id: string,
+    equipmentsId: CustomEquipmentInContract,
+  ): Promise<ELease> {
+    const addEquipments = await this.prisma.$transaction(
+      async (tx: Prisma.TransactionClient) => {
+        const checkContract = await tx.eLease.findUnique({
+          where: {
+            id,
+            status: LeaseStatus.PENDING,
+          },
+          include: {
+            lessee: {
+              select: {
+                name: true,
+              },
+            },
+          },
+        });
+
+        if (!checkContract) {
+          throw new ApiException('contract_not_pending');
+        }
+
+        const equipmentsFound = await tx.equipment.findMany({
+          where: {
+            id: { in: equipmentsId.equipments },
+            status: StatusEquipment.AVAILABLE,
+          },
+        });
+
+        if (equipmentsId.equipments.length > equipmentsFound.length) {
+          throw new ApiException('equipment_unavailable');
+        }
+
+        if (equipmentsFound && checkContract) {
+          const [addEquipments, ,] = await Promise.all([
+            tx.eLease.update({
+              where: { id },
+              data: {
+                equipments: {
+                  connect: equipmentsId.equipments.map((id) => ({ id })),
+                },
+              },
+            }),
+
+            tx.equipment.updateMany({
+              where: {
+                id: { in: equipmentsId.equipments },
+                status: StatusEquipment.AVAILABLE,
+              },
+              data: { status: StatusEquipment.PENDING },
+            }),
+
+            tx.auditLog.create({
+              data: {
+                contractId: id,
+                action: AuditAction.EQUIPMENT_ADDED,
+                description: `Contract for ${checkContract.lessee.name} added some equipments`,
+                metadata: {
+                  contractId: id,
+                  equipments: equipmentsFound,
+                },
+              },
+            }),
+
+            tx.leaseItem.createMany({
+              data: equipmentsFound.map((equipment) => ({
+                contractId: checkContract.id,
+                equipmentId: equipment.id,
+                equipmentName: equipment.name,
+                equipmentCode: equipment.code,
+                equipmentSuffix: equipment.suffix,
+                p_diary: equipment.p_diary,
+                p_weekly: equipment.p_weekly,
+                p_biweekly: equipment.p_biweekly,
+                p_monthly: equipment.p_monthly,
+                p_indemnity: equipment.p_indemnity,
+                startDate: checkContract.startDate,
+                startStatus: StatusEquipment.PENDING,
+              })),
+            }),
+          ]);
+
+          return addEquipments;
+        }
+      },
+    );
+
+    if (!addEquipments) {
+      throw new ApiException('internal_error');
+    }
+
+    return addEquipments;
+  }
+
+  async removeEquipmentsToELease(
+    id: string,
+    equipmentsId: CustomEquipmentInContract,
+  ): Promise<ELease> {
+    const removeEquipments = await this.prisma.$transaction(
+      async (tx: Prisma.TransactionClient) => {
+        const contractExist = await tx.eLease.findUnique({
+          where: {
+            id,
+            status: LeaseStatus.PENDING,
+          },
+          include: {
+            lessee: {
+              select: { name: true },
+            },
+            equipments: { select: { id: true } },
+          },
+        });
+
+        if (!contractExist) {
+          throw new ApiException('contract_not_pending');
+        }
+
+        if (contractExist.status === LeaseStatus.ACTIVE) {
+          throw new ApiException('contract_not_pending');
+        }
+
+        if (contractExist.equipments.length === 1) {
+          throw new ApiException('contract_last_equipment');
+        }
+
+        const equipmentsFound = await tx.equipment.findMany({
+          where: {
+            id: { in: equipmentsId.equipments },
+            status: StatusEquipment.PENDING,
+          },
+        });
+
+        if (equipmentsId.equipments.length > equipmentsFound.length) {
+          throw new ApiException('equipment_unavailable');
+        }
+
+        if (equipmentsFound && contractExist) {
+          const [removeEquipment, ,] = await Promise.all([
+            tx.eLease.update({
+              where: { id, status: LeaseStatus.PENDING },
+              data: {
+                equipments: {
+                  disconnect: equipmentsId.equipments.map((id) => ({ id })),
+                },
+              },
+            }),
+
+            tx.equipment.updateMany({
+              where: {
+                id: { in: equipmentsId.equipments },
+                status: StatusEquipment.PENDING,
+              },
+              data: {
+                status: StatusEquipment.AVAILABLE,
+              },
+            }),
+
+            tx.auditLog.create({
+              data: {
+                contractId: id,
+                action: AuditAction.EQUIPMENT_REMOVED,
+                description: `Contract for ${contractExist.lessee.name} removed some equipments`,
+                metadata: {
+                  contractId: id,
+                  equipments: equipmentsFound,
+                },
+              },
+            }),
+
+            tx.leaseItem.deleteMany({
+              where: {
+                contractId: { equals: id },
+                equipmentId: { in: equipmentsId.equipments },
+              },
+            }),
+          ]);
+
+          return removeEquipment;
+        }
+      },
+    );
+
+    if (!removeEquipments) {
+      throw new ApiException('internal_error');
+    }
+
+    return removeEquipments;
+  }
+
+  async setUpdateStatusEquipment(
+    id: string,
+    equipmentsId: EquipmentsEditStatus,
+  ): Promise<Equipment[]> {
+    const equipmentHash = equipmentsId.equipments.reduce(
+      (acc, item: { id: string; status: StatusEquipment }) => {
+        if (!acc[item.status]) {
+          acc[item.status] = [];
+        }
+
+        acc[item.status].push(item.id);
+
+        return acc;
+      },
+      {} as Record<StatusEquipment, string[]>,
+    );
+
+    const updateStatus = await Promise.all(
+      (Object.entries(equipmentHash) as [StatusEquipment, string[]][]).map(
+        ([status, ids]) =>
+          this.activeELeaseUpdateEquipment(id, { equipments: ids }, status),
+      ),
+    );
+
+    return updateStatus.flat();
+  }
+
+  private async activeELeaseUpdateEquipment(
+    id: string,
+    equipmentsId: CustomEquipmentInContract,
+    status: StatusEquipment,
+  ): Promise<Equipment[]> {
+    const { equipments } = equipmentsId;
+    const contractExist = await this.prisma.eLease.findUnique({
+      where: { id, status: LeaseStatus.ACTIVE },
+      include: {
+        lessee: {
+          select: {
+            name: true,
+          },
+        },
+      },
+    });
+
+    if (!contractExist) {
+      throw new ApiException('contract_not_found');
+    }
+
+    const outStatus: StatusEquipment[] = [
+      StatusEquipment.LEASED,
+      StatusEquipment.REPLACE,
+    ];
+    const outOnContract = {
+      id: { in: equipments },
+      eleaseId: { equals: id },
+      status: { in: outStatus },
+    };
+
+    const equipmentsFound = await this.prisma.equipment.findMany({
+      where: outOnContract,
+    });
+
+    if (equipmentsFound.length < equipments.length) {
+      throw new ApiException('equipment_not_leased');
+    }
+
+    const keepELeaseId: StatusEquipment[] = [
+      StatusEquipment.STOLEN,
+      StatusEquipment.MAINTENANCE,
+    ];
+    const eleaseId = keepELeaseId.includes(status) ? contractExist.id : null;
+
+    const updateEquipmentStatus = await this.prisma.$transaction(
+      async (tx: Prisma.TransactionClient) => {
+        const [updated] = await Promise.all([
+          tx.equipment.updateMany({
+            where: outOnContract,
+            data: { eleaseId, status },
+          }),
+
+          tx.auditLog.create({
+            data: {
+              contractId: id,
+              action: AuditAction.EQUIPMENT_STATUS_CHANGED,
+              description: `Contract for ${contractExist.lessee.name} changed some equipments status`,
+              metadata: {
+                contractId: id,
+                equipments: equipmentsFound.map((equipment) => ({
+                  ...equipment,
+                  status: status,
+                })),
+              },
+            },
+          }),
+
+          tx.leaseItem.updateMany({
+            where: {
+              contractId: { equals: id },
+              equipmentId: { in: equipments },
+              startStatus: { in: outStatus },
+              finalStatus: null,
+            },
+            data: {
+              finalStatus: status,
+              finishDate: new Date(),
+            },
+          }),
+        ]);
+
+        if (updated.count !== equipments.length) {
+          throw new ApiException('equipment_not_leased');
+        }
+
+        return equipmentsFound.map((equipment) => ({
+          ...equipment,
+          eleaseId,
+          status,
+        }));
+      },
+    );
+
+    return updateEquipmentStatus;
+  }
+
+  async replaceEquipment(
+    contractId: string,
+    body: ReplaceEquipmentDto,
+  ): Promise<ELease> {
+    const { replacements } = body;
+
+    const contract = await this.prisma.eLease.findUnique({
+      where: { id: contractId, status: LeaseStatus.ACTIVE },
+      include: { lessee: { select: { name: true } } },
+    });
+
+    if (!contract) {
+      throw new ApiException('contract_not_active');
+    }
+
+    const oldIds = replacements.map((r) => r.oldEquipmentId);
+    const newIds = replacements.map((r) => r.newEquipmentId);
+
+    const uniqueOldIds = new Set(oldIds);
+    const uniqueNewIds = new Set(newIds);
+
+    if (
+      uniqueOldIds.size !== oldIds.length ||
+      uniqueNewIds.size !== newIds.length
+    ) {
+      throw new ApiException('replace_duplicate');
+    }
+
+    const oldLeaseItems = await this.prisma.leaseItem.findMany({
+      where: {
+        contractId,
+        equipmentId: { in: oldIds },
+        finalStatus: {
+          in: [StatusEquipment.MAINTENANCE, StatusEquipment.STOLEN],
+        },
+        replacedBy: { is: null },
+      },
+    });
+
+    if (oldLeaseItems.length !== replacements.length) {
+      throw new ApiException('replace_old_state');
+    }
+
+    const [oldEquipments, newEquipments] = await Promise.all([
+      this.prisma.equipment.findMany({
+        where: {
+          id: { in: oldIds },
+          status: { in: [StatusEquipment.MAINTENANCE, StatusEquipment.STOLEN] },
+        },
+        include: {
+          equipmentAccessories: {
+            select: {
+              accessoryId: true,
+            },
+          },
+        },
+      }),
+      this.prisma.equipment.findMany({
+        where: { id: { in: newIds }, status: StatusEquipment.AVAILABLE },
+        include: {
+          equipmentAccessories: {
+            select: {
+              accessory: {
+                select: {
+                  id: true,
+                  name: true,
+                  p_indemnity: true,
+                },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    if (oldEquipments.length !== replacements.length) {
+      throw new ApiException('replace_old_state');
+    }
+
+    if (newEquipments.length !== replacements.length) {
+      throw new ApiException('replace_new_unavailable');
+    }
+
+    const oldEquipmentMap = new Map(oldEquipments.map((e) => [e.id, e]));
+    const newEquipmentMap = new Map(newEquipments.map((e) => [e.id, e]));
+    const oldLeaseItemMap = new Map(
+      oldLeaseItems.map((i) => [i.equipmentId, i]),
+    );
+
+    for (const { oldEquipmentId, newEquipmentId } of replacements) {
+      const oldEq = oldEquipmentMap.get(oldEquipmentId);
+      const newEq = newEquipmentMap.get(newEquipmentId);
+
+      if (!oldEq || !newEq) {
+        throw new ApiException('replace_pair');
+      }
+
+      if (newEq.code !== oldEq.code) {
+        throw new ApiException('replace_type_mismatch', {
+          from: `${oldEq.code}-${oldEq.suffix}`,
+          to: `${newEq.code}-${newEq.suffix}`,
+        });
+      }
+
+      if (newEq.suffix === oldEq.suffix) {
+        throw new ApiException('replace_same_unit', {
+          equipment: `${newEq.code}-${newEq.suffix}`,
+        });
+      }
+
+      if (
+        newEq.equipmentAccessories.length !== oldEq.equipmentAccessories.length
+      ) {
+        throw new ApiException('replace_accessories');
+      }
+    }
+
+    const maintenanceIds = oldIds.filter(
+      (id) => oldEquipmentMap.get(id)!.status === StatusEquipment.MAINTENANCE,
+    );
+
+    const replacedAt = new Date();
+
+    const updatedLease = await this.prisma.$transaction(
+      async (tx: Prisma.TransactionClient) => {
+        await Promise.all([
+          tx.equipment.updateMany({
+            where: { id: { in: newIds }, status: StatusEquipment.AVAILABLE },
+            data: {
+              status: StatusEquipment.REPLACE,
+            },
+          }),
+
+          tx.eLease.update({
+            where: { id: contractId, status: LeaseStatus.ACTIVE },
+            data: {
+              equipments: {
+                disconnect: maintenanceIds.map((id) => ({ id })),
+                connect: newIds.map((id) => ({ id })),
+              },
+            },
+          }),
+
+          tx.leaseItem.createMany({
+            data: replacements.map(({ oldEquipmentId, newEquipmentId }) => {
+              const newEq = newEquipmentMap.get(newEquipmentId)!;
+
+              return {
+                contractId,
+                equipmentId: newEq.id,
+                equipmentName: newEq.name,
+                equipmentCode: newEq.code,
+                equipmentSuffix: newEq.suffix,
+                p_diary: newEq.p_diary,
+                p_weekly: newEq.p_weekly,
+                p_biweekly: newEq.p_biweekly,
+                p_monthly: newEq.p_monthly,
+                p_indemnity: newEq.p_indemnity,
+                startStatus: StatusEquipment.REPLACE,
+                startDate: replacedAt,
+                replacesItemId: oldLeaseItemMap.get(oldEquipmentId)!.id,
+              };
+            }),
+          }),
+
+          tx.leaseItemAccessory.createMany({
+            data: replacements.flatMap(({ newEquipmentId }) => {
+              const newAccessories =
+                newEquipmentMap.get(newEquipmentId)!.equipmentAccessories;
+
+              return newAccessories.map(({ accessory }) => ({
+                contractId,
+                accessoryId: accessory.id,
+                name: accessory.name,
+                p_indemnity: accessory.p_indemnity,
+              }));
+            }),
+          }),
+
+          tx.auditLog.create({
+            data: {
+              contractId,
+              action: AuditAction.EQUIPMENT_REPLACE,
+              description: `Contract for ${contract.lessee.name} replaced ${replacements.length} equipment(s)`,
+              metadata: {
+                replacements: replacements.map(
+                  ({ oldEquipmentId, newEquipmentId }) => {
+                    const oldEq = oldEquipmentMap.get(oldEquipmentId)!;
+                    const newEq = newEquipmentMap.get(newEquipmentId)!;
+                    const isStolen = oldEq.status === StatusEquipment.STOLEN;
+                    return {
+                      old: {
+                        id: oldEq.id,
+                        code: oldEq.code,
+                        suffix: oldEq.suffix,
+                        status: oldEq.status,
+                        keepELeaseId: isStolen,
+                      },
+                      new: {
+                        id: newEq.id,
+                        code: newEq.code,
+                        suffix: newEq.suffix,
+                        status: StatusEquipment.REPLACE,
+                      },
+                      replacesItemId: oldLeaseItemMap.get(oldEquipmentId)!.id,
+                      replacedAt,
+                    };
+                  },
+                ),
+              },
+            },
+          }),
+        ]);
+
+        return tx.eLease.findUnique({
+          where: { id: contractId },
+          include: { leaseItems: true, lessee: true },
+        });
+      },
+    );
+
+    if (!updatedLease) {
+      throw new ApiException('internal_error');
+    }
+
+    return updatedLease;
+  }
+
+  async closeContract(id: string): Promise<ELease> {
+    const closeContract = await this.prisma.$transaction(
+      async (tx: Prisma.TransactionClient) => {
+        const findContract = await tx.eLease.findUnique({
+          where: {
+            id,
+            status: LeaseStatus.ACTIVE,
+          },
+          include: {
+            leaseItems: {
+              where: {
+                OR: [{ finishDate: null }, { finalStatus: null }],
+              },
+            },
+            lessee: {
+              select: {
+                name: true,
+              },
+            },
+          },
+        });
+
+        if (!findContract) {
+          throw new ApiException('contract_not_found');
+        }
+
+        if (findContract.leaseItems.length > 0) {
+          throw new ApiException('contract_items_out', {
+            equipments: findContract.leaseItems.map(
+              ({ equipmentCode, equipmentSuffix }) => ({
+                equipmentCode,
+                equipmentSuffix,
+              }),
+            ),
+          });
+        }
+
+        const releasedEquipments = await tx.equipment.findMany({
+          where: { eleaseId: id },
+          select: { id: true, status: true },
+        });
+
+        const finishDate = new Date();
+
+        const statement = statementToApi(
+          await this.billing.compute(
+            {
+              ...(await this.billing.contract(id, tx)),
+              status: LeaseStatus.COMPLETED,
+              finishDate,
+            },
+            finishDate,
+            tx,
+          ),
+          true,
+        );
+
+        const [close, ,] = await Promise.all([
+          tx.eLease.update({
+            where: { id, status: LeaseStatus.ACTIVE },
+            data: {
+              status: LeaseStatus.COMPLETED,
+              finishDate,
+            },
+          }),
+
+          tx.equipment.updateMany({
+            where: { eleaseId: { equals: id } },
+            data: { eleaseId: null },
+          }),
+
+          tx.auditLog.create({
+            data: {
+              contractId: findContract.id,
+              action: AuditAction.CONTRACT_COMPLETED,
+              description: `Contract for ${findContract.lessee.name} is completed`,
+              metadata: {
+                lesseeName: findContract.lessee.name,
+                startDate: findContract.startDate,
+                finishDate,
+                status: LeaseStatus.COMPLETED,
+                releasedEquipments,
+                statement,
+              },
+            },
+          }),
+        ]);
+
+        return close;
+      },
+    );
+
+    if (!closeContract) {
+      throw new ApiException('internal_error');
+    }
+
+    return closeContract;
+  }
+}

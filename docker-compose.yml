@@ -1,0 +1,59 @@
+name: krloc-api-v1
+
+# A API de locacao sozinha. Fala com o SSO pelo endereco da maquina
+# (SSO_INTERNAL_URL=http://host.docker.internal:8080/sso, no .env.docker) e com o
+# Postgres nativo pelo mesmo alias. O container sobe e responde /api/health mesmo
+# sem o SSO; so o login precisa dele de pe.
+#
+# O build instala @pedrolucaslopes/sso-client do GitHub Packages: rode num
+# terminal com NODE_AUTH_TOKEN (token classico com read:packages). Ele entra como
+# secret do BuildKit, so durante o `npm ci`, e nao fica na imagem.
+
+x-host: &host
+  # `host.docker.internal` e o alias do host. O Docker Desktop ja o fornece; a
+  # linha abaixo mantem o arquivo portatil para Docker Engine no Linux.
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+services:
+  krloc-migrate:
+    <<: *host
+    build:
+      context: .
+      target: migrate
+      secrets:
+        - NODE_AUTH_TOKEN
+    restart: "no"
+    env_file:
+      - ./.env.docker
+
+  krloc:
+    <<: *host
+    build:
+      context: .
+      target: runtime
+      secrets:
+        - NODE_AUTH_TOKEN
+    restart: unless-stopped
+    env_file:
+      - ./.env.docker
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+    ports:
+      - "${KRLOC_PORT:-3000}:3000"
+    depends_on:
+      krloc-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+secrets:
+  # Token do GitHub com `read:packages`, lido do ambiente de quem roda o build.
+  # Nunca em arquivo versionado, nunca como ARG.
+  NODE_AUTH_TOKEN:
+    environment: NODE_AUTH_TOKEN
