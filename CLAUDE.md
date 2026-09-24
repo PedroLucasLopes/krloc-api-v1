@@ -1,7 +1,7 @@
 # 🚧 KRLoc — locação de equipamentos
 
 Backend da locadora de equipamentos para canteiro de obras. Gerencia **equipamentos, acessórios,
-clientes, locatários, contratos, fechamento financeiro e geração de documentos `.docx`**.
+clientes, locatários, contratos, fechamento financeiro e geração de documentos em PDF**.
 
 Do ponto de vista do ecossistema, é uma **Relying Party** do [SSO](https://github.com/PedroLucasLopes/sso-api-v1). Não tem cadastro de
 usuário nem tela de login própria: toda a autenticação vem da biblioteca
@@ -18,7 +18,7 @@ revisão de segurança, com nota e vetor CVSS de cada achado, está em [`PENTEST
 - **Prisma 7** com `prisma-client` generator → `generated/prisma` (adapter `@prisma/adapter-pg`)
 - **PostgreSQL**. **Não há Redis.**
 - **`@pedrolucaslopes/sso-client`** para OAuth, sessão e RBAC
-- `@nestjs/axios` para a API de CEP · `docx` para documentos · `csv-parser` + `multer` para importação
+- `@nestjs/axios` para a API de CEP · `pdfmake` para documentos · `csv-parser` + `multer` para importação
 - `class-validator` + `class-transformer` nos DTOs
 
 ---
@@ -192,7 +192,8 @@ Regras que `ELeaseService` (~1000 linhas) garante:
 
 ## 💰 Cobrança pelas cláusulas do contrato
 
-**O contrato de locação é a regra.** O texto dele está em `document/utils/contract.json`, e o motor em
+**O contrato de locação é a regra.** O texto dele é um `DocumentTemplate` no banco (ver "Documentos
+em PDF"), e o motor está em
 `routes/finantial/billing/`, sem banco: `calendar.ts` (dias), `packages.ts` (pacotes), `rules.ts` (a
 cobrança de uma posição) e `statement.ts` (o extrato). `billing.spec.ts` cobre cada caso. Todo valor
 corre em centavos e sai em reais.
@@ -233,7 +234,45 @@ segue a primeira, e o teste "o exemplo do Pedro" a fixa.
 | `GET /api/finantial/:id` | o extrato do contrato: pendente, o contratado; ativo, até hoje, como se tudo voltasse hoje; concluído, o gravado |
 | `GET /api/finantial?month=AAAA-MM` | o fechamento do mês: fechados com o que cobrar, ativos no fim do mês com o que correu, frota na obra, manutenções e roubos |
 | `POST /api/finantial/simulate` | a calculadora: equipamentos com a devolução e a ocorrência de cada um. Não grava nada |
-| `POST /api/generate/finantial/:id` · `POST /api/generate/closure/:id` · `POST /api/generate/finantial` | extrato do contrato ativo, baixa do concluído (cláusula 10ª) e fechamento do mês, em `.docx` |
+| `POST /api/generate/finantial/:id` · `POST /api/generate/closure/:id` · `POST /api/generate/finantial` | extrato do contrato ativo, baixa do concluído (cláusula 10ª) e fechamento do mês, em PDF |
+
+---
+
+## 📄 Documentos em PDF
+
+Contrato, extrato, baixa e fechamento do mês saem em **PDF** (`pdfmake`), e **o texto não mora no
+código**: ele é um `DocumentTemplate` no banco, versionado.
+
+| Peça | Onde mora |
+|---|---|
+| Ordem e texto do contrato | `DocumentTemplate` de `kind = CONTRACT`: uma lista ordenada de blocos |
+| Razão social, CNPJ, endereço, telefone e logo | o `issuer` e o `logo` do mesmo registro |
+| Nota de cálculo e assinaturas dos relatórios | `DocumentTemplate` de `kind = REPORT` |
+| Layout: fonte, tabela, margem, cabeçalho e rodapé | `document/pdf/pdf.ts`, e só ele |
+| Tabela de equipamentos, tabela de preços, ficha do locatário | blocos calculados: o modelo diz onde entram e com que rótulos, os dados vêm do contrato |
+
+- **Bloco de texto** é `title`, `section`, `paragraph` ou `clause`; **bloco de dados** é `renter`,
+  `items`, `prices` ou `signatures`. Cláusula nova é uma linha a mais na lista, sem deploy e sem
+  editar TypeScript — antes eram 20 chamadas literais `text9(clausules.nineth)` numa ordem fixa.
+- **Marcadores** dentro do texto: `{issuerName}`, `{issuerTaxId}`, `{issuerAddress}`, `{issuerPhone}`,
+  `{issuerCity}`, `{contractId}`, `{start}`, `{end}`, `{total}` e `{today}`. Marcador desconhecido
+  fica escrito como está, em vez de virar vazio silencioso.
+- **Versão nova é `INSERT` com `version + 1`, nunca `UPDATE`.** O contrato guarda em
+  `ELease.documentTemplateId` a versão com que foi gerado, e o documento refeito depois sai igual ao
+  assinado. Antes, mudar o texto mudava contrato antigo sem avisar ninguém.
+- **A cláusula que o motor de cobrança implementa é marcada** com `billingRule`: `usage`, `renewal`,
+  `excess` e `indemnity`. Modelo que perca alguma é recusado com `document_template_invalid` (424).
+  Sem essa trava, trocar "10%" por "15%" no texto deixaria o contrato e a fatura dizendo coisas
+  diferentes, em silêncio. Mudança nessas quatro exige mexer no motor junto.
+- **Sem modelo carregado**, a geração responde `document_template_missing` (424) e o resto da API
+  continua de pé. O conteúdo de cada ambiente entra por um SQL rodado uma vez, fora de todo
+  repositório, como o da primeira subida do SSO: os repositórios são públicos, e o texto do contrato,
+  o CNPJ e o endereço da locadora são dados da empresa.
+- **`GET /api/document/template/:kind`** mostra a versão em vigor, e `…/versions` lista o histórico.
+  Escrever é pelo SQL, de propósito: mudar o contrato de locação não é um clique.
+- O modelo fica em memória por 60 segundos, no `DocumentTemplateService`.
+- O logo é PNG em base64 no próprio registro. Não há mais asset lido de `process.cwd()`, nem a linha
+  no Dockerfile que copiava `src/global/assets` para fora de `dist/`.
 
 ---
 
@@ -309,7 +348,8 @@ rota que faltar e desfaz tudo no fim, inclusive quando quebra no meio.
 | `/api/client` | GET · GET/:id · POST · PUT/:id · DELETE/:id | valida CEP e CPF/CNPJ |
 | `/api/lessee` | GET · GET/:id · GET/lesseesbyclient/:clientId · POST · PUT/:id · DELETE/:id | |
 | `/api/elease` | GET · GET/:id · POST · POST/{start,close,cancel}/:id · PUT/{add,remove,status,replace}/:id | |
-| `/api/generate` | POST/{contract,finantial,closure}/:id · POST/finantial | devolve `.docx`: contrato, extrato, baixa e fechamento do mês |
+| `/api/generate` | POST/{contract,finantial,closure}/:id · POST/finantial | devolve PDF: contrato, extrato, baixa e fechamento do mês |
+| `/api/document` | GET/template/:kind · GET/template/:kind/versions | o modelo em vigor e o histórico de versões. Ver "Documentos em PDF" |
 | `/api/finantial` | GET (`?month=AAAA-MM`) · GET/:id · POST/simulate | fechamento do mês, extrato do contrato e calculadora. Ver "Cobrança" |
 
 ---
@@ -412,24 +452,22 @@ referidos no corpo, de 400 para 404; contrato que não está pendente, ao pôr o
 2. `ELeaseService.findAll` filtra `lesseeId` com `contains`/`insensitive` sobre um UUID.
 3. Limite de requisições por origem: 600/min geral e 30/min nas rotas caras (`HEAVY_ROUTE_LIMIT`):
    importação de planilha, fechamento do mês, calculadora e documentos.
-4. `FormatService` lê o logo via `path.resolve(process.cwd(), ...)` em vez de `__dirname`, o que
-   obriga o Dockerfile a copiar o asset para fora de `dist/`.
-5. `start:prod` aponta para `node dist/main`, que não existe. O caminho certo é `dist/src/main`.
-6. **`PUT /elease/remove/:id` não confere se o equipamento é do contrato.** Com o id de um
+4. `start:prod` aponta para `node dist/main`, que não existe. O caminho certo é `dist/src/main`.
+5. **`PUT /elease/remove/:id` não confere se o equipamento é do contrato.** Com o id de um
    equipamento reservado em outro contrato responde 200: o `disconnect` não faz nada e o
    `updateMany` devolve o equipamento a `AVAILABLE` ainda ligado ao outro contrato. A trava de "só
    um equipamento" olha o total antes da remoção: tirar todos de uma vez deixa o contrato vazio.
-7. `LeaseItemAccessory` não guarda de qual equipamento veio. Adicionar equipamento a contrato não
+6. `LeaseItemAccessory` não guarda de qual equipamento veio. Adicionar equipamento a contrato não
    fotografa os acessórios dele, e remover não tira.
-8. `FilterClientDTO.email` tem `@IsEmail()`: a busca por e-mail só aceita o endereço completo,
+7. `FilterClientDTO.email` tem `@IsEmail()`: a busca por e-mail só aceita o endereço completo,
    apesar do `contains` no service.
-9. `PrismaExceptionFilter` responde 500 `internal_error` a todo erro conhecido do Prisma que não seja
+8. `PrismaExceptionFilter` responde 500 `internal_error` a todo erro conhecido do Prisma que não seja
    `P2002`. É o que chega quando um update condicionado ao status perde a corrida (start, cancel ou
    close concorrentes) e quando `DELETE /client/:id` recebe um id que não existe.
-10. **Começar contrato antes da data de início** deixa o item com a retirada no dia previsto e a
+9. **Começar contrato antes da data de início** deixa o item com a retirada no dia previsto e a
     volta no dia real, antes dela. A conta cobra um dia, o mínimo, mas o documento mostra as duas
     datas como estão.
-11. **Aviso de não prorrogação (5ª) não é registrado.** Contrato vencido e não devolvido conta como
+10. **Aviso de não prorrogação (5ª) não é registrado.** Contrato vencido e não devolvido conta como
     prorrogado. Dano por mau uso (8ª), que segue cobrando até o conserto, também não tem registro.
 
 ### ✅ Já corrigidos
@@ -460,6 +498,13 @@ referidos no corpo, de 400 para 404; contrato que não está pendente, ao pôr o
   nunca validava nada, e contrato com equipamento roubado não fechava, sem volta nem indenização.
   Agora a cobrança segue as cláusulas do contrato (ver "Cobrança"), o roubo tem volta e indenização,
   e cada documento tem o próprio nome de arquivo no fallback ASCII.
+- **O documento era código.** O texto do contrato morava em `document/utils/contract.json`, com as
+  cláusulas sob chaves ordinais (`nineth`, `twelveth`), e a ordem delas era uma sequência literal de
+  `text9(...)` no `FormatService`: cláusula nova exigia editar TypeScript e subir imagem. O CNPJ e o
+  endereço da locadora estavam dentro do parágrafo de abertura, num repositório público, e o logo era
+  lido de `process.cwd()`, o que obrigava o Dockerfile a copiar o asset para fora de `dist/`. Nada era
+  congelado: um contrato regerado depois de uma mudança de texto saía diferente do assinado. Agora o
+  modelo é dado, versionado e preso ao contrato. Ver "Documentos em PDF".
 - **O front reconhecia o erro pela frase.** Eram 55 textos exatos e 6 expressões regulares, e o texto
   desconhecido aparecia cru na tela. Agora todo erro sai com código (ver "Contrato de erro") e o front
   nunca mostra `message`. O filtro de validação do Prisma, que devolvia ao cliente a última linha da
@@ -519,6 +564,8 @@ referidos no corpo, de 400 para 404; contrato que não está pendente, ao pôr o
 - DTO não declara campo que o servidor controla, e service não espalha linha de planilha no Prisma: o
   `whitelist` só barra o que o DTO não declara.
 - Rota cara leva `@Throttle(HEAVY_ROUTE_LIMIT)`.
+- Texto de documento é dado, não código: ele entra no `DocumentTemplate`, e o layout fica em
+  `document/pdf/`. Cláusula com `billingRule` só muda junto do motor de cobrança.
 - Erro sai com código do catálogo `global/error/apiError.ts`. `message` não leva valor da requisição nem
   detalhe interno; valor que a tela mostra vai em membro próprio.
 - Transição de status acontece em `$transaction`, junto do `AuditLog`.

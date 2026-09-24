@@ -44,11 +44,6 @@ RUN --mount=type=bind,source=.npmrc,target=/app/.npmrc \
 
 COPY --from=build /app/dist dist
 
-# O FormatService le path.resolve(process.cwd(), 'src/global/assets/logo.png'),
-# ou seja, relativo ao WORKDIR e nao ao __dirname.
-# TODO: trocar por resolucao via __dirname e mover o asset para dist/.
-COPY --from=build /app/src/global/assets src/global/assets
-
 USER node
 EXPOSE 3000
 

@@ -139,6 +139,14 @@ export const API_ERRORS = {
     status: HttpStatus.BAD_REQUEST,
     message: 'Some equipment in this contract is not pending',
   },
+  document_template_missing: {
+    status: HttpStatus.FAILED_DEPENDENCY,
+    message: 'No document template loaded for this kind',
+  },
+  document_template_invalid: {
+    status: HttpStatus.FAILED_DEPENDENCY,
+    message: 'The loaded document template is not usable',
+  },
   contract_document_missing: {
     status: HttpStatus.BAD_REQUEST,
     message: 'Generate the contract document before starting',

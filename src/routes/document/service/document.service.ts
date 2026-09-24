@@ -2,17 +2,18 @@ import { Injectable } from '@nestjs/common';
 import { Response } from 'express';
 import { LeaseStatus } from 'generated/prisma/client';
 import { ApiException } from 'src/global/error/apiError';
-import { date } from '../helper/report.helper';
 import { PrismaService } from 'src/global/prisma/prisma.service';
 import { statementToApi } from 'src/routes/finantial/billing/statement';
 import { BillingService } from 'src/routes/finantial/service/billing.service';
-import { FormatService } from './format.service';
-import { ReportFormatService } from './reportFormat.service';
+import { date } from '../helper/report.helper';
+import { contractDefinition } from '../pdf/contract.pdf';
+import { render } from '../pdf/pdf';
+import { closingDefinition, statementDefinition } from '../pdf/report.pdf';
+import { DocumentTemplateService } from './documentTemplate.service';
 
 const fileDate = (value: Date): string => date(value).replaceAll('/', '-');
 
-const DOCX =
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const PDF = 'application/pdf';
 
 const encodeFileName = (name: string): string =>
   encodeURIComponent(name).replace(
@@ -24,8 +25,7 @@ const encodeFileName = (name: string): string =>
 export class DocumentService {
   constructor(
     private prisma: PrismaService,
-    private file: FormatService,
-    private reports: ReportFormatService,
+    private templates: DocumentTemplateService,
     private billing: BillingService,
   ) {}
 
@@ -36,7 +36,7 @@ export class DocumentService {
     fallback: string,
   ): void {
     res.set({
-      'Content-Type': DOCX,
+      'Content-Type': PDF,
       'Content-Disposition': `attachment; filename="${fallback}"; filename*=UTF-8''${encodeFileName(fileName)}`,
       'Content-Length': buffer.length,
     });
@@ -51,19 +51,24 @@ export class DocumentService {
       throw new ApiException('contract_not_found');
     }
 
+    const template = await this.templates.contractById(
+      contract.documentTemplateId,
+    );
     const statement = statementToApi(await this.billing.compute(contract));
-    const buffer = await this.file.contract(contract, statement);
+    const buffer = await render(
+      contractDefinition(contract, statement, template),
+    );
 
     await this.prisma.eLease.update({
       where: { id: contract.id },
-      data: { contract_generated: new Date() },
+      data: { contract_generated: new Date(), documentTemplateId: template.id },
     });
 
     this.send(
       res,
       buffer,
-      `Contrato ${contract.lessee.name} - ${contract.lessee.client.name} ${fileDate(contract.startDate)}.docx`,
-      'contrato.docx',
+      `Contrato ${contract.lessee.name} - ${contract.lessee.client.name} ${fileDate(contract.startDate)}.pdf`,
+      'contrato.pdf',
     );
   }
 
@@ -74,14 +79,17 @@ export class DocumentService {
       throw new ApiException('contract_not_active');
     }
 
+    const template = await this.templates.report();
     const statement = statementToApi(await this.billing.compute(contract));
-    const buffer = await this.reports.statement(contract, statement, 'extract');
+    const buffer = await render(
+      statementDefinition(contract, statement, 'extract', template),
+    );
 
     this.send(
       res,
       buffer,
-      `Extrato ${contract.lessee.name} - ${contract.lessee.client.name} ${fileDate(new Date())}.docx`,
-      'extrato.docx',
+      `Extrato ${contract.lessee.name} - ${contract.lessee.client.name} ${fileDate(new Date())}.pdf`,
+      'extrato.pdf',
     );
   }
 
@@ -95,14 +103,17 @@ export class DocumentService {
       throw new ApiException('contract_not_found');
     }
 
+    const template = await this.templates.report();
     const statement = await this.billing.statement(id);
-    const buffer = await this.reports.statement(contract, statement, 'release');
+    const buffer = await render(
+      statementDefinition(contract, statement, 'release', template),
+    );
 
     this.send(
       res,
       buffer,
-      `Baixa ${contract.lessee.name} - ${contract.lessee.client.name} ${fileDate(contract.startDate)}.docx`,
-      'baixa.docx',
+      `Baixa ${contract.lessee.name} - ${contract.lessee.client.name} ${fileDate(contract.startDate)}.pdf`,
+      'baixa.pdf',
     );
   }
 
@@ -110,9 +121,10 @@ export class DocumentService {
     month: string,
     res: Response,
   ): Promise<void> {
+    const template = await this.templates.report();
     const closing = await this.billing.closing(month);
-    const buffer = await this.reports.closing(closing);
+    const buffer = await render(closingDefinition(closing, template));
 
-    this.send(res, buffer, `Fechamento ${month}.docx`, 'fechamento.docx');
+    this.send(res, buffer, `Fechamento ${month}.pdf`, 'fechamento.pdf');
   }
 }
