@@ -2,34 +2,29 @@ import { StatusEquipment } from 'generated/prisma/client';
 import { PrismaService } from 'src/global/prisma/prisma.service';
 import { AccessoryService } from './accessory.service';
 
-interface Estoque {
+interface Stock {
   id: string;
   quantity: number;
 }
 
-const UNIDADE = '0f2a8b3c-1d4e-4f6a-8b9c-0d1e2f3a4b5c';
-const CINTA = '1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d';
-const MANGUEIRA = '2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e';
+const UNIT = '0f2a8b3c-1d4e-4f6a-8b9c-0d1e2f3a4b5c';
+const STRAP = '1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d';
+const HOSE = '2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e';
 
-/**
- * Prisma de mentira com uma unidade e um estoque de acessorios. O `updateMany`
- * so tira unidade de quem ainda tem, que e a trava do codigo contra duas
- * associacoes levando a mesma ultima unidade.
- */
-function fakePrisma(status: StatusEquipment | null, estoque: Estoque[]) {
-  const acessorios = estoque.map((item) => ({ ...item }));
-  const associacoes: { equipmentId: string; accessoryId: string }[] = [];
+function fakePrisma(status: StatusEquipment | null, stock: Stock[]) {
+  const accessories = stock.map((item) => ({ ...item }));
+  const associations: { equipmentId: string; accessoryId: string }[] = [];
 
   const tx = {
     accessory: {
       updateMany: ({ where }: { where: { id: { in: string[] } } }) => {
-        const alcancados = acessorios.filter(
+        const reached = accessories.filter(
           (item) => where.id.in.includes(item.id) && item.quantity > 0,
         );
 
-        for (const item of alcancados) item.quantity -= 1;
+        for (const item of reached) item.quantity -= 1;
 
-        return Promise.resolve({ count: alcancados.length });
+        return Promise.resolve({ count: reached.length });
       },
     },
     equipmentAccessory: {
@@ -38,7 +33,7 @@ function fakePrisma(status: StatusEquipment | null, estoque: Estoque[]) {
       }: {
         data: { equipmentId: string; accessoryId: string }[];
       }) => {
-        associacoes.push(...data);
+        associations.push(...data);
         return Promise.resolve({ count: data.length });
       },
     },
@@ -46,7 +41,7 @@ function fakePrisma(status: StatusEquipment | null, estoque: Estoque[]) {
 
   const prisma = {
     equipment: {
-      findUnique: () => Promise.resolve(status && { id: UNIDADE, status }),
+      findUnique: () => Promise.resolve(status && { id: UNIT, status }),
     },
     accessory: {
       findMany: ({
@@ -55,27 +50,21 @@ function fakePrisma(status: StatusEquipment | null, estoque: Estoque[]) {
         where: { id: { in: string[] }; quantity: { gt: number } };
       }) =>
         Promise.resolve(
-          acessorios.filter(
+          accessories.filter(
             (item) => where.id.in.includes(item.id) && item.quantity > 0,
           ),
         ),
     },
-    $transaction: <T>(fn: (cliente: typeof tx) => Promise<T>) => fn(tx),
+    $transaction: <T>(fn: (client: typeof tx) => Promise<T>) => fn(tx),
   };
 
   return {
     service: new AccessoryService(prisma as unknown as PrismaService),
-    acessorios,
-    associacoes,
+    accessories,
+    associations,
   };
 }
 
-/**
- * REGRESSAO. A conferencia de "so unidade disponivel" vivia no `where` de um
- * `findMany`, e o retorno dele e sempre um array: `if (!equipment)` nunca era
- * verdade. Acessorio entrava em unidade reservada, locada ou desativada, e saia
- * para a obra sem estar em contrato nenhum.
- */
 describe('associar acessorio a equipamento', () => {
   it.each([
     StatusEquipment.PENDING,
@@ -85,78 +74,78 @@ describe('associar acessorio a equipamento', () => {
     StatusEquipment.STOLEN,
     StatusEquipment.RETIRED,
   ])('recusa unidade %s, e o estoque nao se mexe', async (status) => {
-    const { service, acessorios, associacoes } = fakePrisma(status, [
-      { id: CINTA, quantity: 3 },
+    const { service, accessories, associations } = fakePrisma(status, [
+      { id: STRAP, quantity: 3 },
     ]);
 
     await expect(
       service.associateEquipmentsToAccessory({
-        equipmentId: UNIDADE,
-        accessoryIds: [CINTA],
+        equipmentId: UNIT,
+        accessoryIds: [STRAP],
       }),
     ).rejects.toMatchObject({ code: 'equipment_unavailable' });
 
-    expect(acessorios[0].quantity).toBe(3);
-    expect(associacoes).toHaveLength(0);
+    expect(accessories[0].quantity).toBe(3);
+    expect(associations).toHaveLength(0);
   });
 
   it('recusa unidade que nao existe', async () => {
-    const { service } = fakePrisma(null, [{ id: CINTA, quantity: 3 }]);
+    const { service } = fakePrisma(null, [{ id: STRAP, quantity: 3 }]);
 
     await expect(
       service.associateEquipmentsToAccessory({
-        equipmentId: UNIDADE,
-        accessoryIds: [CINTA],
+        equipmentId: UNIT,
+        accessoryIds: [STRAP],
       }),
     ).rejects.toMatchObject({ code: 'equipment_not_found' });
   });
 
   it('associa a unidade disponivel, e cada acessorio consome uma unidade do estoque', async () => {
-    const { service, acessorios, associacoes } = fakePrisma(
+    const { service, accessories, associations } = fakePrisma(
       StatusEquipment.AVAILABLE,
       [
-        { id: CINTA, quantity: 3 },
-        { id: MANGUEIRA, quantity: 1 },
+        { id: STRAP, quantity: 3 },
+        { id: HOSE, quantity: 1 },
       ],
     );
 
-    const resultado = await service.associateEquipmentsToAccessory({
-      equipmentId: UNIDADE,
-      accessoryIds: [CINTA, MANGUEIRA],
+    const result = await service.associateEquipmentsToAccessory({
+      equipmentId: UNIT,
+      accessoryIds: [STRAP, HOSE],
     });
 
-    expect(resultado.registers).toBe(2);
-    expect(acessorios.map((item) => item.quantity)).toEqual([2, 0]);
-    expect(associacoes).toHaveLength(2);
+    expect(result.registers).toBe(2);
+    expect(accessories.map((item) => item.quantity)).toEqual([2, 0]);
+    expect(associations).toHaveLength(2);
   });
 
   it('o mesmo acessorio repetido no corpo vale uma vez', async () => {
-    const { service, acessorios, associacoes } = fakePrisma(
+    const { service, accessories, associations } = fakePrisma(
       StatusEquipment.AVAILABLE,
-      [{ id: CINTA, quantity: 2 }],
+      [{ id: STRAP, quantity: 2 }],
     );
 
     await service.associateEquipmentsToAccessory({
-      equipmentId: UNIDADE,
-      accessoryIds: [CINTA, CINTA],
+      equipmentId: UNIT,
+      accessoryIds: [STRAP, STRAP],
     });
 
-    expect(acessorios[0].quantity).toBe(1);
-    expect(associacoes).toHaveLength(1);
+    expect(accessories[0].quantity).toBe(1);
+    expect(associations).toHaveLength(1);
   });
 
   it('recusa acessorio sem estoque', async () => {
-    const { service, associacoes } = fakePrisma(StatusEquipment.AVAILABLE, [
-      { id: CINTA, quantity: 0 },
+    const { service, associations } = fakePrisma(StatusEquipment.AVAILABLE, [
+      { id: STRAP, quantity: 0 },
     ]);
 
     await expect(
       service.associateEquipmentsToAccessory({
-        equipmentId: UNIDADE,
-        accessoryIds: [CINTA],
+        equipmentId: UNIT,
+        accessoryIds: [STRAP],
       }),
     ).rejects.toMatchObject({ code: 'accessories_unavailable' });
 
-    expect(associacoes).toHaveLength(0);
+    expect(associations).toHaveLength(0);
   });
 });

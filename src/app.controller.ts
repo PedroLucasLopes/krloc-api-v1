@@ -15,7 +15,6 @@ import { Session } from './global/dto/session.dto';
 export class AppController {
   constructor(private readonly appService: AppService) {}
 
-  /** Liveness do container. Fora da sessao e fora do RBAC. */
   @Get('health')
   @HttpCode(HttpStatus.OK)
   @SsoPublic()
@@ -23,15 +22,6 @@ export class AppController {
     return this.appService.health();
   }
 
-  /**
-   * Landing pos-login. Exige sessao, mas nao uma permissao propria: quem
-   * chegou ate aqui ja tem acesso ao projeto.
-   *
-   * Devolve o estado da sessao para o front montar a interface, e serve de
-   * prova de que o header chegou ao handler mesmo quando o usuario se
-   * identificou por cookie: o guard hidrata o `Authorization` a partir da
-   * sessao, entao daqui para baixo existe um caminho so.
-   */
   @Get('home')
   @HttpCode(HttpStatus.OK)
   @SsoAuthenticated()

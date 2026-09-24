@@ -12,11 +12,6 @@ import {
 } from 'src/global/validators/dateRange.validators';
 import { IsDateAfter } from 'src/global/validators/isDateAfter.validators';
 
-/**
- * O contrato nasce pendente, e so o ciclo muda isso: situacao e data de
- * fechamento nao vem do corpo. Com elas aqui, um contrato nascia ativo sem o
- * documento assinado, ou concluido sem nenhuma volta, direto no fechamento do mes.
- */
 export class CreateELeaseDto {
   @IsString()
   @IsNotEmpty()

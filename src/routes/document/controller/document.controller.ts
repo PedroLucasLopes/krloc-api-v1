@@ -14,7 +14,6 @@ import { currentMonth } from 'src/routes/finantial/billing/calendar';
 import { ClosingQueryDto } from 'src/routes/finantial/dto/closingQuery.dto';
 import { DocumentService } from '../service/document.service';
 
-/** Todo documento e montado na hora, no mesmo processo: rota cara. */
 @Controller('generate')
 @Throttle(HEAVY_ROUTE_LIMIT)
 export class DocumentController {
@@ -29,7 +28,6 @@ export class DocumentController {
     return await this.documentService.generateContract(id, res);
   }
 
-  /** O fechamento do mes em documento. Corpo `{ month: "AAAA-MM" }`; sem ele, o mes corrente. */
   @Post('finantial')
   @HttpCode(HttpStatus.OK)
   async generateMonthlyClosing(
@@ -42,7 +40,6 @@ export class DocumentController {
     );
   }
 
-  /** O extrato de um contrato ativo. */
   @Post('finantial/:id')
   @HttpCode(HttpStatus.OK)
   async generateStatement(
@@ -52,7 +49,6 @@ export class DocumentController {
     return await this.documentService.generateStatement(id, res);
   }
 
-  /** A baixa de um contrato concluido. */
   @Post('closure/:id')
   @HttpCode(HttpStatus.OK)
   async generateContractClosure(

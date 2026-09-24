@@ -122,7 +122,6 @@ export class LesseeService {
         throw new ApiException('client_not_found');
       }
 
-      // Mandar o cliente atual e aceito; so a troca de dono e recusada.
       if (clientExists.id !== lesseeExists.clientId) {
         throw new ApiException('lessee_owner_change');
       }
@@ -139,9 +138,6 @@ export class LesseeService {
 
     const validatedData: EditLesseeDto = { ...data, zipcode };
 
-    // O endereco enviado e conferido contra a base do CEP, nunca contra o que
-    // estava gravado: o gravado pertence ao CEP antigo. Com o mesmo CEP, o que o
-    // corpo nao traz continua o gravado; com CEP novo, o gravado nao vale mais.
     if (zipcodeChanged || addressSent) {
       const zipCode = await this.zipcodeService.getZipcode(
         zipcode || lesseeExists.zipcode,
@@ -176,7 +172,6 @@ export class LesseeService {
       throw new ApiException('lessee_not_found');
     }
 
-    // Contrato encerrado tambem conta: o historico dele aponta para a obra.
     if (lessee._count.eleases > 0) {
       throw new ApiException('lessee_has_contracts');
     }

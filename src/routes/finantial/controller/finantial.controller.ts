@@ -20,7 +20,6 @@ import { BillingService } from '../service/billing.service';
 export class FinantialController {
   constructor(private billing: BillingService) {}
 
-  /** O fechamento do mes: `?month=AAAA-MM`, ou o mes corrente. */
   @Get()
   @HttpCode(HttpStatus.OK)
   @Throttle(HEAVY_ROUTE_LIMIT)
@@ -28,10 +27,6 @@ export class FinantialController {
     return await this.billing.closing(query.month ?? currentMonth());
   }
 
-  /**
-   * A calculadora de contrato. E `POST` porque leva equipamentos e eventos no
-   * corpo; nao grava nada.
-   */
   @Post('simulate')
   @HttpCode(HttpStatus.OK)
   @Throttle(HEAVY_ROUTE_LIMIT)
@@ -39,7 +34,6 @@ export class FinantialController {
     return await this.billing.simulate(body);
   }
 
-  /** O extrato de um contrato: contratado, o que correu e, fechado, o cobrado. */
   @Get(':id')
   @HttpCode(HttpStatus.OK)
   async statement(@Param('id') id: string): Promise<StatementDto> {

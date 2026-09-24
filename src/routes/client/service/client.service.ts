@@ -96,9 +96,6 @@ export class ClientService {
 
     const validatedData: EditClientDto = { ...data, zipcode };
 
-    // O endereco enviado e conferido contra a base do CEP, nunca contra o que
-    // estava gravado: o gravado pertence ao CEP antigo. Com o mesmo CEP, o que o
-    // corpo nao traz continua o gravado; com CEP novo, o gravado nao vale mais.
     if (zipcodeChanged || addressSent) {
       const zipCode = await this.zipcodeService.getZipcode(
         zipcode || clientExists.zipcode,

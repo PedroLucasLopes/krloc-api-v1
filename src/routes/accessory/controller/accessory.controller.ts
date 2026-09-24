@@ -48,8 +48,6 @@ export class AccessoryController {
   }
 
   @Post('upload')
-  // Le o arquivo inteiro e grava em lote: e a rota mais cara da API, e a que
-  // mais rende a quem so quiser ocupa-la.
   @Throttle(HEAVY_ROUTE_LIMIT)
   @HttpCode(HttpStatus.CREATED)
   @UseInterceptors(FileInterceptor('file'))

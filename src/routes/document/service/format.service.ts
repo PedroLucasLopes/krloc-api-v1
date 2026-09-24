@@ -31,11 +31,6 @@ import type { StatementDto } from 'src/routes/finantial/billing/statement';
 @Injectable()
 export class FormatService {
   constructor() {}
-  /**
-   * O contrato para assinar. O valor de cada equipamento e o do periodo
-   * contratado pela tabela da data da assinatura (clausula 7a), e a tabela de
-   * precos vai junto: e por ela que se cobram prorrogacao e dia excedente.
-   */
   async contract(data: ELeaseById, statement: StatementDto): Promise<Buffer> {
     const lessee = data.lessee;
     const equipments = data.leaseItems;
@@ -504,7 +499,6 @@ export class FormatService {
             text9(paragraph.clausules.footer),
             new Paragraph(''),
             text9(
-              // O dia da assinatura e o de Sao Paulo, nao o do relogio do container, em UTC.
               `Local e data: Contagem, ${new Date().toLocaleDateString(
                 'pt-BR',
                 { timeZone: 'America/Sao_Paulo' },

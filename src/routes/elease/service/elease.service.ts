@@ -253,8 +253,6 @@ export class ELeaseService {
           throw new ApiException('contract_document_missing');
         }
 
-        // O valor contratado vai para o historico no inicio: e o que o documento
-        // assinado diz, pela tabela da data da assinatura (clausula 7a).
         const contracted = statementToApi(
           await this.billing.compute(
             await this.billing.contract(id, tx),
@@ -347,8 +345,6 @@ export class ELeaseService {
           });
         }
 
-        // Cancelar desfaz reservas. Equipamento do contrato que ja nao esta
-        // PENDING mudou de situacao por fora, e nao volta a AVAILABLE sozinho.
         if (checkContract.equipments.length > 0) {
           throw new ApiException('contract_equipment_not_reserved');
         }
@@ -367,7 +363,6 @@ export class ELeaseService {
             },
           }),
 
-          // Condicionado ao status: um start concorrente faz o cancelamento falhar.
           tx.eLease.update({
             where: { id, status: LeaseStatus.PENDING },
             data: {
@@ -646,8 +641,6 @@ export class ELeaseService {
       throw new ApiException('contract_not_found');
     }
 
-    // Registra volta o que esta na obra por ESTE contrato: o que saiu locado e o
-    // substituto, que entrou como REPLACE no lugar de um que voltou.
     const outStatus: StatusEquipment[] = [
       StatusEquipment.LEASED,
       StatusEquipment.REPLACE,
@@ -704,13 +697,11 @@ export class ELeaseService {
             },
             data: {
               finalStatus: status,
-              // Roubo tambem tem data: o uso do roubado e cobrado ate ela.
               finishDate: new Date(),
             },
           }),
         ]);
 
-        // Outra volta do mesmo equipamento chegou antes desta.
         if (updated.count !== equipments.length) {
           throw new ApiException('equipment_not_leased');
         }
@@ -744,7 +735,6 @@ export class ELeaseService {
     const oldIds = replacements.map((r) => r.oldEquipmentId);
     const newIds = replacements.map((r) => r.newEquipmentId);
 
-    // 2. Garante que não há duplicatas no array enviado
     const uniqueOldIds = new Set(oldIds);
     const uniqueNewIds = new Set(newIds);
 
@@ -755,8 +745,6 @@ export class ELeaseService {
       throw new ApiException('replace_duplicate');
     }
 
-    // 3. Busca todos os leaseItems relevantes de uma vez
-    // So o que voltou para manutencao ou foi roubado, e ainda nao ganhou substituto.
     const oldLeaseItems = await this.prisma.leaseItem.findMany({
       where: {
         contractId,
@@ -772,7 +760,6 @@ export class ELeaseService {
       throw new ApiException('replace_old_state');
     }
 
-    // 4. Busca todos os equipamentos antigos e novos de uma vez
     const [oldEquipments, newEquipments] = await Promise.all([
       this.prisma.equipment.findMany({
         where: {
@@ -813,7 +800,6 @@ export class ELeaseService {
       throw new ApiException('replace_new_unavailable');
     }
 
-    // 5. Monta mapas para lookup O(1) e valida compatibilidade par a par
     const oldEquipmentMap = new Map(oldEquipments.map((e) => [e.id, e]));
     const newEquipmentMap = new Map(newEquipments.map((e) => [e.id, e]));
     const oldLeaseItemMap = new Map(
@@ -854,7 +840,6 @@ export class ELeaseService {
 
     const replacedAt = new Date();
 
-    // 6. Transação: executa todas as trocas atomicamente
     const updatedLease = await this.prisma.$transaction(
       async (tx: Prisma.TransactionClient) => {
         await Promise.all([
@@ -865,7 +850,6 @@ export class ELeaseService {
             },
           }),
 
-          // Desconecta todos os antigos e conecta todos os novos
           tx.eLease.update({
             where: { id: contractId, status: LeaseStatus.ACTIVE },
             data: {
@@ -876,8 +860,6 @@ export class ELeaseService {
             },
           }),
 
-          // O item do substituto aponta para o que ele substitui e comeca hoje.
-          // A posicao continua sendo cobrada desde o inicio do original.
           tx.leaseItem.createMany({
             data: replacements.map(({ oldEquipmentId, newEquipmentId }) => {
               const newEq = newEquipmentMap.get(newEquipmentId)!;
@@ -972,8 +954,6 @@ export class ELeaseService {
             status: LeaseStatus.ACTIVE,
           },
           include: {
-            // Travam o fechamento so os itens ainda na obra. O roubado tem data e
-            // entra na conta com a indenizacao (clausula 6a).
             leaseItems: {
               where: {
                 OR: [{ finishDate: null }, { finalStatus: null }],
@@ -1002,9 +982,6 @@ export class ELeaseService {
           });
         }
 
-        // Com toda volta registrada, o que ainda aponta para o contrato voltou
-        // para manutencao sem substituto. O vinculo acaba junto com o contrato;
-        // a situacao fica, porque o equipamento continua em manutencao.
         const releasedEquipments = await tx.equipment.findMany({
           where: { eleaseId: id },
           select: { id: true, status: true },
@@ -1012,8 +989,6 @@ export class ELeaseService {
 
         const finishDate = new Date();
 
-        // O extrato do fechamento e o que se cobra: fica gravado na auditoria, e
-        // o historico nao muda se a tabela de precos mudar depois.
         const statement = statementToApi(
           await this.billing.compute(
             {

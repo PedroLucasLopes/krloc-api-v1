@@ -4,19 +4,10 @@ import {
   ValidationOptions,
 } from 'class-validator';
 
-/*
- * Limites das datas de contrato e da calculadora. A conta da cobranca percorre
- * os dias do periodo: uma data como 9999-12-31 fazia cada equipamento custar
- * milhoes de passos, e a API inteira parava enquanto calculava.
- */
-
-/** Maior periodo contratado: cinco anos. */
 export const MAX_CONTRACT_DAYS = 1830;
 
-/** Maior devolucao simulada, contada do inicio: dez anos. */
 export const MAX_SIMULATION_DAYS = 3660;
 
-/** Datas aceitas: de 2000 ao fim de 2099. Fora disso e digito errado, ou ataque. */
 export const MIN_DATE = new Date('2000-01-01T00:00:00.000Z');
 export const MAX_DATE = new Date('2100-01-01T00:00:00.000Z');
 
@@ -27,7 +18,6 @@ const time = (value: unknown): number =>
     ? new Date(value).getTime()
     : Number.NaN;
 
-/** A data cai entre `MIN_DATE` e `MAX_DATE`. Formato invalido fica com o `@IsDateString`. */
 export function IsDateInRange(validationOptions?: ValidationOptions) {
   return function (object: object, propertyName: string) {
     registerDecorator({
@@ -48,7 +38,6 @@ export function IsDateInRange(validationOptions?: ValidationOptions) {
   };
 }
 
-/** A data fica no maximo `maxDays` dias depois da outra propriedade. */
 export function IsWithinDays(
   property: string,
   maxDays: number,

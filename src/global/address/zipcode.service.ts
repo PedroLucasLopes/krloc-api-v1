@@ -16,21 +16,15 @@ export class ZipcodeService {
   }
 
   async getZipcode(zipcode: string): Promise<ZipcodeInfo> {
-    /*
-     * O CEP vem do corpo da requisicao e entra no CAMINHO da URL da base
-     * externa. Os DTOs so exigem oito caracteres, entao aqui ele e reduzido aos
-     * digitos: sem isso, `12345678/../outra` mudaria o endereco chamado, e um
-     * `?` ou `#` mudaria a consulta. Oito digitos ou nada.
-     */
-    const somenteDigitos = zipcode.replace(/\D/g, '');
+    const digitsOnly = zipcode.replace(/\D/g, '');
 
-    if (somenteDigitos.length !== 8) {
+    if (digitsOnly.length !== 8) {
       throw new ApiException('zipcode_not_found');
     }
 
     const { data } = await firstValueFrom(
       this.httpService.get<ZipcodeInfo>(
-        `${this.zipcodeApi}/${somenteDigitos}/json/`,
+        `${this.zipcodeApi}/${digitsOnly}/json/`,
       ),
     );
 

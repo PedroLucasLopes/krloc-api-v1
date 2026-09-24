@@ -108,8 +108,6 @@ export class EquipmentService {
 
     await new Promise<void>((resolve, reject) => {
       const processBatch = async () => {
-        // Celula vazia de pacote opcional e "sem preco", e nao zero: um zero
-        // entraria na conta como pacote de graca.
         const optional = (value: unknown): number | null =>
           typeof value === 'number'
             ? value
@@ -117,8 +115,6 @@ export class EquipmentService {
               ? Number(value)
               : null;
 
-        // So as colunas do cadastro. Espalhar a linha inteira gravava qualquer
-        // coluna da planilha que fosse campo da tabela: id, eleaseId, suffix.
         const formattedBatch = batch.map((item) => ({
           name: String(item.name ?? '').trim(),
           p_diary: Number(item.p_diary),
@@ -177,8 +173,6 @@ export class EquipmentService {
     const updateData: EditEquipmentDto = { ...data };
     const equipment = await this.outOfContract(id);
 
-    // Desativado volta a frota so pela reativacao. Sem isto, o cadastro seria o
-    // caminho de volta: bastava gravar qualquer situacao do cadastro.
     if (equipment.status === StatusEquipment.RETIRED) {
       throw new ApiException('equipment_retired');
     }
@@ -201,11 +195,6 @@ export class EquipmentService {
     });
   }
 
-  /**
-   * O caminho de volta do desativado, e o unico: ele volta a frota disponivel.
-   * Reativar o que nao esta desativado nao e reativacao, e mudanca de situacao
-   * pelo cadastro, que tem as regras dele.
-   */
   async reactivateEquipment(id: string): Promise<Equipment> {
     const equipment = await this.prisma.equipment.findUnique({ where: { id } });
 
@@ -217,7 +206,6 @@ export class EquipmentService {
       throw new ApiException('equipment_not_retired');
     }
 
-    // Condicionado a situacao: de duas reativacoes ao mesmo tempo, so uma vale.
     const reactivated = await this.prisma.equipment.updateMany({
       where: { id, status: StatusEquipment.RETIRED },
       data: { status: StatusEquipment.AVAILABLE },
@@ -230,7 +218,6 @@ export class EquipmentService {
     return this.findById(id);
   }
 
-  /** Equipamento em contrato, reservado, locado ou substituto, so muda pelo contrato. */
   private async outOfContract(id: string): Promise<Equipment> {
     const equipment = await this.prisma.equipment.findUnique({ where: { id } });
 

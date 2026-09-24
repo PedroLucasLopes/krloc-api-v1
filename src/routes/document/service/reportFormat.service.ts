@@ -29,7 +29,6 @@ import {
   title,
 } from '../helper/report.helper';
 
-/** A avaliacao de retorno de cada unidade, que a baixa precisa trazer (clausula 10a). */
 const RETURN_TEXT: Record<string, string> = {
   AVAILABLE: 'devolvido em condições de uso',
   MAINTENANCE: 'devolvido para manutenção',
@@ -106,11 +105,6 @@ async function pack(children: (Paragraph | Table)[]): Promise<Buffer> {
 
 @Injectable()
 export class ReportFormatService {
-  /**
-   * O extrato de um contrato ativo, ou a baixa de um concluido. A baixa e o
-   * documento da clausula 10a: numero do contrato, equipamentos e avaliacao de
-   * retorno, com o que se cobra.
-   */
   async statement(
     contract: BillingContractRecord,
     statement: StatementDto,
@@ -205,7 +199,6 @@ export class ReportFormatService {
     return pack(children);
   }
 
-  /** O fechamento do mes: fechados, ativos, frota na obra, manutencoes e roubos. */
   async closing(closing: ClosingDto): Promise<Buffer> {
     const { summary } = closing;
 

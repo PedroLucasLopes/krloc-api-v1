@@ -21,11 +21,6 @@ import * as path from 'path';
 import { BUSINESS_TIME_ZONE } from 'src/routes/finantial/billing/calendar';
 import type { StatementLineDto } from 'src/routes/finantial/billing/statement';
 
-/*
- * Pecas dos documentos financeiros: extrato, baixa e fechamento do mes. O texto
- * e em portugues, como o contrato que eles acompanham.
- */
-
 const moneyFormat = new Intl.NumberFormat('pt-BR', {
   style: 'currency',
   currency: 'BRL',
@@ -59,7 +54,6 @@ const PACKAGE_NAMES: Record<string, [string, string]> = {
   daily: ['diária', 'diárias'],
 };
 
-/** "1 semana + 3 diárias". */
 export const packagesText = (
   packages: { kind: string; count: number }[],
 ): string =>
@@ -73,7 +67,6 @@ export const packagesText = (
 export const daysText = (days: number): string =>
   days === 1 ? '1 dia' : `${days} dias`;
 
-/** Descricao e detalhe de cada linha da cobranca, com a clausula que a manda. */
 export function lineText(line: StatementLineDto): [string, string] {
   switch (line.kind) {
     case 'contracted':
@@ -87,7 +80,6 @@ export function lineText(line: StatementLineDto): [string, string] {
         packagesText(line.packages),
       ];
     case 'renewal': {
-      // Extrato gravado antes do agrupamento nao tem `count`: e uma prorrogacao.
       const count = line.count ?? 1;
 
       return count === 1
@@ -121,8 +113,6 @@ export const END_TEXT: Record<string, string> = {
   stolen: 'roubado',
   open: 'na obra',
 };
-
-/* ------------------------------ montagem ------------------------------ */
 
 const FONT = 'Calibri';
 
@@ -161,7 +151,6 @@ export const labelValue = (label: string, value: string): Paragraph =>
 
 const thin = { style: BorderStyle.SINGLE, size: 4, color: 'BFBFBF' };
 
-/** Tabela simples, com cabecalho em negrito e valores a direita onde indicado. */
 export function table(
   headers: string[],
   rows: string[][],
@@ -213,7 +202,6 @@ export function table(
   });
 }
 
-/** O logo da empresa ao fundo da pagina, como no contrato. */
 export function logoHeader(): Header {
   const logo = fs.readFileSync(
     path.resolve(process.cwd(), 'src/global/assets/logo.png'),

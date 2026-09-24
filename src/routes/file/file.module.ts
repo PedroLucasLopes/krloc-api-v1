@@ -8,12 +8,6 @@ import { MAX_UPLOAD_BYTES } from './file.constant';
   imports: [
     MulterModule.register({
       storage: memoryStorage(),
-      /*
-       * O arquivo fica na memoria do processo, entao o teto precisa valer
-       * ANTES de ele ser lido inteiro: sem `limits`, um upload de 1 GB era
-       * carregado na memoria e so depois recusado por tamanho. O multer corta
-       * o fluxo no limite, e o Nest transforma isso em 413.
-       */
       limits: { fileSize: MAX_UPLOAD_BYTES, files: 1, fields: 10 },
     }),
   ],

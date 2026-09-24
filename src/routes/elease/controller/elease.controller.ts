@@ -33,7 +33,6 @@ export class ELeaseController {
     return await this.eleaseService.findById(id);
   }
 
-  // Contract
   @Post()
   @HttpCode(HttpStatus.CREATED)
   async createElease(
@@ -60,7 +59,6 @@ export class ELeaseController {
     return await this.eleaseService.cancelContract(id);
   }
 
-  // Equipment
   @Put('add/:id')
   @HttpCode(HttpStatus.OK)
   async addEquipmentsToContract(

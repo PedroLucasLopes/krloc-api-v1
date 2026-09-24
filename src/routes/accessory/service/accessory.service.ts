@@ -66,8 +66,6 @@ export class AccessoryService {
 
     await new Promise<void>((resolve, reject) => {
       const processBatch = async () => {
-        // So as colunas do cadastro. Espalhar a linha inteira gravava qualquer
-        // coluna da planilha que fosse campo da tabela, como o id.
         const formattedBatch = batch.map((item) => ({
           name: item?.name,
           quantity: Number(item?.quantity),
@@ -120,8 +118,6 @@ export class AccessoryService {
   public async associateEquipmentsToAccessory(
     data: AssociateEquipmentAccessory,
   ): Promise<EquipmentAccessoryCreated> {
-    // O mesmo acessorio repetido tiraria uma unidade por vez do estoque e
-    // esbarraria na chave composta. Vale uma vez.
     const accessoryIds = [...new Set(data.accessoryIds)];
 
     const [equipment, accessories] = await Promise.all([
@@ -139,13 +135,6 @@ export class AccessoryService {
       throw new ApiException('equipment_not_found');
     }
 
-    /*
-     * So unidade disponivel recebe acessorio. A conferencia existia no `where` de
-     * um `findMany`, cujo retorno e sempre um array: `if (!equipment)` nunca era
-     * verdade, e acessorio entrava em unidade reservada, locada ou desativada. O
-     * contrato fotografa os acessorios quando reserva a unidade, entao o que
-     * entrasse depois sairia para a obra sem estar em contrato nenhum.
-     */
     if (equipment.status !== StatusEquipment.AVAILABLE) {
       throw new ApiException('equipment_unavailable');
     }
@@ -156,7 +145,7 @@ export class AccessoryService {
 
     const createEquipmentAccessory = await this.prisma.$transaction(
       async (tx: Prisma.TransactionClient) => {
-        const [estoque, createAssociation] = await Promise.all([
+        const [stock, createAssociation] = await Promise.all([
           tx.accessory.updateMany({
             where: { id: { in: accessoryIds }, quantity: { gt: 0 } },
             data: {
@@ -172,8 +161,7 @@ export class AccessoryService {
           }),
         ]);
 
-        // Outra associacao levou a ultima unidade entre a conferencia e aqui.
-        if (estoque.count !== accessoryIds.length) {
+        if (stock.count !== accessoryIds.length) {
           throw new ApiException('accessories_unavailable');
         }
 

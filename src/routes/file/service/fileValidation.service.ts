@@ -6,13 +6,6 @@ import {
 } from '../file.constant';
 import { ApiException } from 'src/global/error/apiError';
 
-/**
- * Confere o arquivo da importacao antes de ele virar cadastro.
- *
- * O teto de tamanho tambem esta no multer, em `file.module.ts`, e e la que ele
- * de fato protege: aqui o arquivo ja esta inteiro na memoria. Esta conferencia
- * fica como segunda linha, e para dar uma mensagem que a tela sabe traduzir.
- */
 @Injectable()
 export class FileSizeValidationPipe implements PipeTransform {
   transform(value: Express.Multer.File) {
@@ -24,12 +17,12 @@ export class FileSizeValidationPipe implements PipeTransform {
       throw new ApiException('file_too_large');
     }
 
-    const nome = value.originalname ?? '';
-    const tipo = value.mimetype ?? '';
+    const name = value.originalname ?? '';
+    const kind = value.mimetype ?? '';
 
     if (
-      !SPREADSHEET_EXTENSION.test(nome) ||
-      !SPREADSHEET_MIME_TYPES.has(tipo)
+      !SPREADSHEET_EXTENSION.test(name) ||
+      !SPREADSHEET_MIME_TYPES.has(kind)
     ) {
       throw new ApiException('file_type_invalid');
     }

@@ -14,7 +14,7 @@ export class AppService {
       message: `Logado como ${user.name}`,
       user: { id: user.id, name: user.name, email: user.email },
       permissions: user.permissions.length,
-      tokenDisponivel: Boolean(token),
+      tokenAvailable: Boolean(token),
       authorizationHeader: authorizationHeader?.startsWith('Bearer ') === true,
     };
   }

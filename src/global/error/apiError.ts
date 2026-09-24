@@ -6,26 +6,7 @@ interface ApiErrorDefinition {
   message: string;
 }
 
-/**
- * O contrato de erro da API. Todo erro da aplicacao sai com um codigo estavel
- * no campo `error`, e e por ele que o front escolhe o texto, na lingua da tela:
- *
- *   { "statusCode": 404, "error": "equipment_not_found", "message": "Equipment not found" }
- *
- * - **`error` e o contrato.** Codigo novo e acrescimo; renomear ou tirar um
- *   quebra o front que o traduz.
- * - **`message` e para quem le a resposta crua**, como o `detail` da RFC 9457
- *   secao 3.1.4. Nenhum front a mostra, e ela nunca carrega valor vindo da
- *   requisicao nem detalhe interno.
- * - **Valor que a tela precisa mostrar vai num membro proprio**, como `status`
- *   ou `equipments` (RFC 9457 secao 3.2), e nunca dentro do texto.
- *
- * Erro que o framework gera sozinho, como o 404 de caminho que nao existe, o
- * 413 do upload e o 429 do limite de requisicoes, fica como o Nest o escreve:
- * o front o reconhece pelo status.
- */
 export const API_ERRORS = {
-  // gerais
   no_results: { status: HttpStatus.NOT_FOUND, message: 'No records found' },
   validation_failed: {
     status: HttpStatus.BAD_REQUEST,
@@ -40,7 +21,6 @@ export const API_ERRORS = {
     message: 'Internal server error',
   },
 
-  // endereco
   zipcode_not_found: {
     status: HttpStatus.NOT_FOUND,
     message: 'Zipcode not found',
@@ -54,7 +34,6 @@ export const API_ERRORS = {
     message: 'The address does not match the zipcode',
   },
 
-  // arquivo
   file_missing: { status: HttpStatus.BAD_REQUEST, message: 'No file uploaded' },
   file_too_large: {
     status: HttpStatus.BAD_REQUEST,
@@ -65,7 +44,6 @@ export const API_ERRORS = {
     message: 'Only .csv files are accepted',
   },
 
-  // equipamento
   equipment_not_found: {
     status: HttpStatus.NOT_FOUND,
     message: 'Equipment not found',
@@ -103,7 +81,6 @@ export const API_ERRORS = {
     message: 'Some equipment is not leased in this contract',
   },
 
-  // acessorio
   accessory_not_found: {
     status: HttpStatus.NOT_FOUND,
     message: 'Accessory not found',
@@ -121,7 +98,6 @@ export const API_ERRORS = {
     message: 'The accessory is associated with equipment',
   },
 
-  // cliente e obra
   client_not_found: {
     status: HttpStatus.NOT_FOUND,
     message: 'Client not found',
@@ -143,7 +119,6 @@ export const API_ERRORS = {
     message: 'The lessee has contracts',
   },
 
-  // contrato
   contract_not_found: {
     status: HttpStatus.NOT_FOUND,
     message: 'Contract not found',
@@ -185,7 +160,6 @@ export const API_ERRORS = {
     message: 'No equipment activity found for this period',
   },
 
-  // substituicao
   replace_duplicate: {
     status: HttpStatus.BAD_REQUEST,
     message: 'Duplicate equipment ids in replacements',
@@ -219,13 +193,8 @@ export const API_ERRORS = {
 
 export type ApiErrorCode = keyof typeof API_ERRORS;
 
-/**
- * Membros extras do corpo, com o que a tela precisa para montar o texto. So
- * valor seguro de mostrar: nada de detalhe interno.
- */
 export type ApiErrorExtensions = Record<string, unknown>;
 
-/** O corpo do erro. Os membros fixos vencem qualquer extensao de mesmo nome. */
 export function apiErrorBody(
   code: ApiErrorCode,
   extensions: ApiErrorExtensions = {},
@@ -235,7 +204,6 @@ export function apiErrorBody(
   return { ...extensions, statusCode: status, error: code, message };
 }
 
-/** Para filtros, que escrevem a resposta sem passar por exception. */
 export function sendApiError(
   response: Response,
   code: ApiErrorCode,

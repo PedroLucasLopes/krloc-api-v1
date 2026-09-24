@@ -50,8 +50,6 @@ export class EquipmentController {
   }
 
   @Post('upload')
-  // Le o arquivo inteiro e grava em lote: e a rota mais cara da API, e a que
-  // mais rende a quem so quiser ocupa-la.
   @Throttle(HEAVY_ROUTE_LIMIT)
   @HttpCode(HttpStatus.CREATED)
   @UseInterceptors(FileInterceptor('file'))
@@ -62,8 +60,6 @@ export class EquipmentController {
     return await this.equipmentService.importCsv(file);
   }
 
-  // Desativado nao se edita: reativar e o caminho de volta, e devolve a unidade
-  // a frota como disponivel.
   @Post('reactivate/:id')
   @HttpCode(HttpStatus.OK)
   async reactivateEquipment(@Param('id') id: string): Promise<Equipment> {

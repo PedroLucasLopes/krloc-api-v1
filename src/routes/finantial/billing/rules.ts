@@ -1,35 +1,10 @@
 import { addDays, calendarDays } from './calendar';
 import { cheapestCover, Cover, PackageLine, PriceTable } from './packages';
 
-/**
- * A cobranca de uma posicao, pelas clausulas do contrato de locacao. Onde o
- * contrato nao fala, vale a regra de negocio da empresa, e cada uma esta marcada.
- *
- * Posicao e o lugar do equipamento no contrato: o original e os substitutos que
- * vieram depois dele. Ela e cobrada como um aluguel so, do inicio do original a
- * volta do ultimo (regra da empresa: quebra e troca nao mudam o que o cliente
- * paga).
- *
- * | Situacao | Cobranca |
- * |---|---|
- * | saiu da obra antes do fim do periodo contratado, por devolucao, defeito ou roubo | o uso: os dias corridos da retirada a efetiva devolucao (1a, paragrafo segundo), na combinacao mais barata de pacotes da tabela da assinatura (7a) |
- * | ficou o periodo inteiro | o valor contratado, que e o uso do periodo |
- * | passou do prazo | contratado + cada prorrogacao completa pela tabela em vigor no vencimento (5a) + os dias alem do ultimo periodo vencido a 10% do valor mensal atual (paragrafo unico da 5a) |
- * | roubo | alem do aluguel, a indenizacao do equipamento, pelo preco do dia do pagamento (6a e 7a) |
- *
- * O valor contratado e o do periodo inteiro: e o que o documento assinado diz e
- * o que a obra paga se ficar o prazo todo. Ele nao e piso: quem devolve antes
- * paga o que usou.
- *
- * Todo valor e em centavos.
- */
-
-/** Como a posicao terminou. `open` e a que ainda esta na obra. */
 export type PositionEnd = 'returned' | 'defect' | 'stolen' | 'open';
 
 export type FinalStatus = 'AVAILABLE' | 'MAINTENANCE' | 'STOLEN';
 
-/** Uma unidade da posicao: o original ou um substituto. */
 export interface PositionUnit {
   itemId: string;
   equipmentId: string;
@@ -41,17 +16,11 @@ export interface PositionUnit {
 }
 
 export interface PositionInput {
-  /** Os dias do periodo contratado, do inicio ao termino previsto. */
   plannedDays: number;
-  /** A tabela da data da assinatura, congelada no item original (7a). */
   contractPrices: PriceTable;
-  /** Em ordem: o original e os substitutos. */
   units: PositionUnit[];
-  /** Ate quando conta a posicao que ainda esta na obra. */
   asOf: Date;
-  /** O dia do preco da indenizacao: o do fechamento, ou o da consulta. */
   indemnityDate: Date;
-  /** A tabela em vigor para o equipamento naquela data. */
   priceAt: (equipmentId: string, at: Date) => PriceTable;
 }
 
@@ -64,10 +33,6 @@ export type ChargeLine =
     }
   | { kind: 'usage'; days: number; packages: PackageLine[]; amount: number }
   | {
-      /**
-       * Prorrogacoes seguidas com o mesmo preco viram uma linha: `count` delas, a
-       * partir da de numero `index`, cada uma de `days` dias a `unitAmount`.
-       */
       kind: 'renewal';
       index: number;
       count: number;
@@ -91,10 +56,8 @@ export interface PositionCharge {
   start: Date;
   endDate: Date;
   days: number;
-  /** O valor do periodo contratado, pela tabela da assinatura. */
   contracted: number;
   lines: ChargeLine[];
-  /** Aluguel: contratado, uso, prorrogacoes e excedente. */
   rental: number;
   indemnity: number;
   total: number;
@@ -108,7 +71,6 @@ function endOf(unit: PositionUnit): PositionEnd {
   return 'returned';
 }
 
-/** A unidade que estava na obra naquele dia: a ultima que ja tinha chegado. */
 function unitOnSite(units: PositionUnit[], at: Date): PositionUnit {
   let current = units[0];
 
@@ -128,11 +90,6 @@ const samePackages = (a: PackageLine[], b: PackageLine[]): boolean =>
       line.unitPrice === b[index].unitPrice,
   );
 
-/**
- * 10% do valor mensal atual por dia (paragrafo unico da 5a). Equipamento sem
- * mensal na tabela nao tem como seguir a clausula ao pe da letra: cobra a
- * diaria.
- */
 export function excessDailyRate(prices: PriceTable): number {
   return prices.monthly !== null
     ? Math.round(prices.monthly / 10)
@@ -150,10 +107,6 @@ export function chargePosition(input: PositionInput): PositionCharge {
   const lines: ChargeLine[] = [];
 
   if (days < plannedDays) {
-    // Saiu antes do fim do periodo, por devolucao, defeito ou roubo, ou ainda
-    // esta na obra e conta ate hoje: cobra os dias corridos ate a efetiva
-    // devolucao (1a, paragrafo segundo). Cobrir menos dias nunca custa mais que o
-    // periodo inteiro, entao o uso nunca passa do contratado.
     const usage = cheapestCover(contractPrices, days);
 
     lines.push({
@@ -170,13 +123,8 @@ export function chargePosition(input: PositionInput): PositionCharge {
       amount: contracted.amount,
     });
 
-    // Cada periodo vencido depois do primeiro e uma prorrogacao por igual periodo,
-    // pela tabela em vigor no dia em que ela comecou (5a).
     const expired = Math.floor(days / plannedDays);
 
-    // A mesma tabela da o mesmo pacote: a conta sai uma vez por tabela, e as
-    // prorrogacoes seguidas de mesmo preco viram uma linha so. Uma diaria
-    // prorrogada por anos seria uma linha por dia.
     const covers = new Map<PriceTable, Cover>();
     const coverOf = (prices: PriceTable): Cover => {
       let cover = covers.get(prices);
@@ -219,7 +167,6 @@ export function chargePosition(input: PositionInput): PositionCharge {
       lines.push(group);
     }
 
-    // Os dias alem do ultimo periodo vencido, na devolucao (paragrafo unico).
     const excess = days - expired * plannedDays;
 
     if (excess > 0) {
@@ -236,7 +183,6 @@ export function chargePosition(input: PositionInput): PositionCharge {
     }
   }
 
-  // Roubo: a indenizacao do equipamento, pelo preco do dia do pagamento (6a e 7a).
   for (const unit of units) {
     if (unit.finalStatus !== 'STOLEN') continue;
 
@@ -268,11 +214,6 @@ export function chargePosition(input: PositionInput): PositionCharge {
   };
 }
 
-/**
- * A posicao de um contrato que ainda nao comecou: o periodo contratado inteiro,
- * pela tabela da assinatura (7a). E o valor do documento que vai ser assinado,
- * o que a obra paga se ficar o prazo todo.
- */
 export function quotePosition(input: {
   plannedDays: number;
   contractPrices: PriceTable;

@@ -23,7 +23,6 @@ class EquipmentStatusDto {
 export class EquipmentsEditStatus {
   @IsArray()
   @IsNotEmpty()
-  // Sem os dois abaixo o item nao e validado, e qualquer status passava.
   @ValidateNested({ each: true })
   @Type(() => EquipmentStatusDto)
   equipments: EquipmentStatusDto[];

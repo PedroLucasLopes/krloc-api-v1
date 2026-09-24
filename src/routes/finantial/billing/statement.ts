@@ -10,7 +10,6 @@ import {
   quotePosition,
 } from './rules';
 
-/** O que a conta le de um item de contrato. */
 export interface BillingItem {
   id: string;
   equipmentId: string;
@@ -42,11 +41,9 @@ export type PriceLookup = (equipmentId: string, at: Date) => PriceTable;
 export interface StatementPosition {
   units: PositionUnit[];
   charge: PositionCharge;
-  /** Equipamento sem diaria na tabela: a conta sai zerada, e a tela avisa. */
   missingPrice: boolean;
 }
 
-/** O extrato de um contrato, em centavos. */
 export interface Statement {
   contractId: string;
   status: string;
@@ -64,11 +61,6 @@ export interface Statement {
   };
 }
 
-/**
- * Teto de dias que a conta aceita, defesa por tras da validacao das datas: cem
- * anos. Cada dia e um passo da combinacao de pacotes, e a conta roda no mesmo
- * processo que atende todo o resto.
- */
 export const MAX_BILLING_DAYS = 36_600;
 
 export const unitCode = (code: string, suffix: number): string =>
@@ -76,10 +68,6 @@ export const unitCode = (code: string, suffix: number): string =>
 
 const FINAL_STATUSES = new Set<string>(['AVAILABLE', 'MAINTENANCE', 'STOLEN']);
 
-/**
- * As posicoes do contrato: cada item original com os substitutos que vieram
- * depois dele, em ordem. Item que substitui outro nao abre posicao propria.
- */
 export function positionsOf(items: BillingItem[]): BillingItem[][] {
   const next = new Map<string, BillingItem>();
 
@@ -116,10 +104,6 @@ function toUnit(item: BillingItem): PositionUnit {
   };
 }
 
-/**
- * O contrato como estava em `asOf`: o que chegou depois fica de fora, e o que
- * voltou depois ainda estava na obra. E o que o fechamento de um mes passado le.
- */
 function asItWas(items: BillingItem[], asOf: Date): BillingItem[] {
   return items
     .filter((item) => item.startDate.getTime() <= asOf.getTime())
@@ -130,10 +114,6 @@ function asItWas(items: BillingItem[], asOf: Date): BillingItem[] {
     );
 }
 
-/**
- * O extrato do contrato na data `asOf`. Pendente mostra o contratado; ativo, o
- * que correu ate `asOf`; concluido, o do fechamento. Cancelado nao cobra nada.
- */
 export function buildStatement(input: {
   contract: BillingContract;
   items: BillingItem[];
@@ -149,7 +129,6 @@ export function buildStatement(input: {
   }
 
   const cancelled = contract.status === 'CANCELLED';
-  // Pendente ainda nao correu: nao ha uso a contar, so o periodo contratado.
   const pending = contract.status === 'PENDING';
   const asOf = pending ? contract.startDate : input.asOf;
   const items =
@@ -213,20 +192,16 @@ export function buildStatement(input: {
   };
 }
 
-/* ------------------------------------------------------------------------ */
-/* Na resposta da API: reais, com duas casas, e datas em ISO.               */
-/* ------------------------------------------------------------------------ */
+export const toReais = (cents: number): number => Math.round(cents) / 100;
 
-export const reais = (cents: number): number => Math.round(cents) / 100;
-
-const reaisOrNull = (cents: number | null): number | null =>
-  cents === null ? null : reais(cents);
+const toReaisOrNull = (cents: number | null): number | null =>
+  cents === null ? null : toReais(cents);
 
 const packageToApi = (line: PackageLine) => ({
   kind: line.kind,
   count: line.count,
-  unitPrice: reais(line.unitPrice),
-  amount: reais(line.amount),
+  unitPrice: toReais(line.unitPrice),
+  amount: toReais(line.amount),
 });
 
 function lineToApi(line: ChargeLine) {
@@ -237,7 +212,7 @@ function lineToApi(line: ChargeLine) {
         kind: line.kind,
         days: line.days,
         packages: line.packages.map(packageToApi),
-        amount: reais(line.amount),
+        amount: toReais(line.amount),
       };
     case 'renewal':
       return {
@@ -247,23 +222,23 @@ function lineToApi(line: ChargeLine) {
         from: line.from.toISOString(),
         days: line.days,
         packages: line.packages.map(packageToApi),
-        unitAmount: reais(line.unitAmount),
-        amount: reais(line.amount),
+        unitAmount: toReais(line.unitAmount),
+        amount: toReais(line.amount),
       };
     case 'excess':
       return {
         kind: line.kind,
         days: line.days,
-        monthly: reaisOrNull(line.monthly),
-        dailyRate: reais(line.dailyRate),
-        amount: reais(line.amount),
+        monthly: toReaisOrNull(line.monthly),
+        dailyRate: toReais(line.dailyRate),
+        amount: toReais(line.amount),
       };
     case 'indemnity':
       return {
         kind: line.kind,
         itemId: line.itemId,
         code: line.code,
-        amount: reais(line.amount),
+        amount: toReais(line.amount),
       };
   }
 }
@@ -296,16 +271,16 @@ export function statementToApi(statement: Statement, frozen = false) {
         finalStatus: unit.finalStatus,
       })),
       lines: charge.lines.map(lineToApi),
-      contracted: reais(charge.contracted),
-      rental: reais(charge.rental),
-      indemnity: reais(charge.indemnity),
-      total: reais(charge.total),
+      contracted: toReais(charge.contracted),
+      rental: toReais(charge.rental),
+      indemnity: toReais(charge.indemnity),
+      total: toReais(charge.total),
     })),
     totals: {
-      contracted: reais(statement.totals.contracted),
-      rental: reais(statement.totals.rental),
-      indemnity: reais(statement.totals.indemnity),
-      total: reais(statement.totals.total),
+      contracted: toReais(statement.totals.contracted),
+      rental: toReais(statement.totals.rental),
+      indemnity: toReais(statement.totals.indemnity),
+      total: toReais(statement.totals.total),
     },
   };
 }

@@ -4,39 +4,33 @@ import { CreateClientDto } from 'src/routes/client/dto/createClient.dto';
 import { CreateELeaseDto } from 'src/routes/elease/dto/createELease.dto';
 import { FieldError, validationException } from './validationError';
 
-/** O que o ValidationPipe global faria com o corpo, sem subir a aplicacao. */
-async function recusa(
+async function refusal(
   dto: new () => object,
-  corpo: Record<string, unknown>,
+  payload: Record<string, unknown>,
 ): Promise<{ status: number; body: Record<string, unknown> }> {
-  const erros = await validate(plainToInstance(dto, corpo), {
+  const errors = await validate(plainToInstance(dto, payload), {
     whitelist: true,
     forbidNonWhitelisted: true,
   });
-  const excecao = validationException(erros);
+  const exception = validationException(errors);
 
   return {
-    status: excecao.getStatus(),
-    body: excecao.getResponse() as Record<string, unknown>,
+    status: exception.getStatus(),
+    body: exception.getResponse() as Record<string, unknown>,
   };
 }
 
-const cliente = {
+const client = {
   name: 'Cliente',
   tax_id: '11222333000181',
   address: 'Rua A',
   zipcode: '01001000',
 };
 
-/**
- * A recusa da validacao e o contrato que o front traduz: `validation_failed`
- * com o codigo de cada campo. O front nunca mostra o texto do class-validator,
- * entao o codigo tem de vir da regra, pelo `context` do DTO.
- */
 describe('validationException', () => {
   it('regra com codigo no DTO manda o codigo do campo', async () => {
-    const { status, body } = await recusa(CreateClientDto, {
-      ...cliente,
+    const { status, body } = await refusal(CreateClientDto, {
+      ...client,
       phone: '123',
     });
     const fields = body.fields as FieldError[];
@@ -49,7 +43,7 @@ describe('validationException', () => {
   });
 
   it('regra sem codigo sai invalid_value', async () => {
-    const { body } = await recusa(CreateClientDto, { ...cliente, name: 42 });
+    const { body } = await refusal(CreateClientDto, { ...client, name: 42 });
 
     expect(body.fields).toContainEqual(
       expect.objectContaining({ field: 'name', error: 'invalid_value' }),
@@ -57,8 +51,8 @@ describe('validationException', () => {
   });
 
   it('campo que o DTO nao declara e recusado, sem repetir o valor', async () => {
-    const { body } = await recusa(CreateClientDto, {
-      ...cliente,
+    const { body } = await refusal(CreateClientDto, {
+      ...client,
       extra: '<script>alert(1)</script>',
     });
 
@@ -69,7 +63,7 @@ describe('validationException', () => {
   });
 
   it('a data final antes da inicial sai end_before_start', async () => {
-    const { body } = await recusa(CreateELeaseDto, {
+    const { body } = await refusal(CreateELeaseDto, {
       lesseeId: '9f1c1e8e-3a4b-4c5d-8e9f-0a1b2c3d4e5f',
       equipments: ['9f1c1e8e-3a4b-4c5d-8e9f-0a1b2c3d4e5f'],
       startDate: '2026-09-10T12:00:00.000Z',

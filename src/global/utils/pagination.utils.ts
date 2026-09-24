@@ -5,11 +5,6 @@ type PaginationType = {
   limit: number;
 };
 
-/**
- * Teto do `limit`. Sem ele, `?limit=1000000` devolve a tabela inteira numa
- * resposta so: e varredura de dados e e negacao de servico pelo mesmo pedido.
- * O piso continua 10, e 500 e o que o front pede nas consultas de apoio.
- */
 export const MAX_LIMIT = 500;
 
 export const PaginationConfig = (

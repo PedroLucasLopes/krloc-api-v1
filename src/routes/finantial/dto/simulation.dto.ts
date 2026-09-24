@@ -18,7 +18,6 @@ import {
 } from 'src/global/validators/dateRange.validators';
 import { IsDateAfter } from 'src/global/validators/isDateAfter.validators';
 
-/** Defeito ou roubo de um equipamento, numa data, com ou sem substituto. */
 export class SimulationEventDto {
   @IsIn(['defect', 'stolen'])
   kind: 'defect' | 'stolen';
@@ -34,12 +33,6 @@ export class SimulationEventDto {
   replaced: boolean;
 }
 
-/**
- * Um equipamento da simulacao e a devolucao dele: cada um volta no proprio dia.
- * Com substituto, a devolucao e a do substituto; sem, a unidade sai da obra na
- * ocorrencia, e a devolucao nao conta. O teto da devolucao, contado do inicio
- * da simulacao, e conferido no service, que ve as duas datas.
- */
 export class SimulationItemDto {
   @IsUUID('4')
   equipmentId: string;
@@ -57,7 +50,6 @@ export class SimulationItemDto {
   event?: SimulationEventDto;
 }
 
-/** A calculadora: equipamentos com a devolucao de cada um, e o prazo contratado. */
 export class SimulationDto {
   @IsArray()
   @ArrayNotEmpty()

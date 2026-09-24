@@ -1,28 +1,15 @@
-/* Teste ponta a ponta do krloc como aplicacao cliente do SSO.
- *
- * O login federado com o Google e substituido por uma AuthSession inserida
- * direto no banco do SSO mais o cookie de sessao cifrado com a COOKIE_SECRET
- * do servidor. O resto do caminho e real: redirect, PKCE, troca de code com
- * private_key_jwt, verificacao contra o JWKS e RBAC por rota. */
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { Client } = require('pg');
-/* Do PACOTE, nunca do repositorio do SSO. Esta aplicacao e independente:
- * repositorio proprio, infraestrutura propria, ciclo de vida proprio. O
- * @pedrolucaslopes/sso-client ja e o contrato com o SSO, entao e ele que carrega as
- * ferramentas de teste, e elas viajam junto com qualquer aplicacao nova. */
 const {
   ensureProjectUser,
   mintAdminToken,
   purgeTestUsers,
 } = require('@pedrolucaslopes/sso-client/testing');
 
-/* Raiz DESTA aplicacao. O teste nao sobe para o workspace. */
 const APP_DIR = path.resolve(__dirname, '..');
 
-/* Cada aplicacao e dona dos proprios segredos. O teste precisa de tres
- * fontes, e usa cada uma no papel certo. */
 const readEnv = (file) => {
   if (!fs.existsSync(file)) return {};
   return Object.fromEntries(
@@ -37,105 +24,69 @@ const readEnv = (file) => {
   );
 };
 
-/* Configuracao do teste, TODA dentro desta aplicacao.
- *
- * Este projeto nao le arquivo de outro repositorio. Ele se conecta a um SSO,
- * e para o teste de integracao precisa de duas credenciais de operador desse
- * SSO: a conexao do banco e a COOKIE_SECRET, que substituem o login federado
- * que nenhum teste automatizado consegue fazer.
- *
- * Elas moram em `krloc/.env.test`, ignorado pelo git, ou no ambiente. Quem
- * opera o SSO preenche uma vez. Ver `.env.test.example`.
- */
 const env = {
   ...readEnv(path.join(APP_DIR, '.env.docker')),         // identidade do krloc
   ...readEnv(path.join(APP_DIR, '.env.test')),           // credenciais do SSO alvo
   ...process.env,
 };
 
-const faltando = [
+const missing = [
   'APP_TEST_BASE_URL',
   'SSO_TEST_DATABASE_URL',
   'SSO_TEST_COOKIE_SECRET',
 ].filter(
-  (chave) => !env[chave],
+  (varName) => !env[varName],
 );
 
-if (faltando.length) {
+if (missing.length) {
   console.error(
-    `\nFaltam ${faltando.join(' e ')}.\n\n` +
+    `\nFaltam ${missing.join(' e ')}.\n\n` +
       'Copie krloc/.env.test.example para krloc/.env.test e preencha com os\n' +
       'dados do SSO contra o qual este teste roda.\n',
   );
   process.exit(1);
 }
 
-/* A COOKIE_SECRET do SSO e diferente da do krloc de proposito: cada dominio
- * cifra o proprio estado. Selar o cookie de sessao do SSO com a chave errada
- * nao da erro, so manda o usuario para o login de novo. */
 const SSO_COOKIE_SECRET = env.SSO_TEST_COOKIE_SECRET;
 
-/* Os cookies desta aplicacao levam prefixo proprio. Cookie nao e isolado por
- * porta (RFC 6265 secao 8.5), entao sem isso duas aplicacoes em localhost
- * sobrescreveriam a sessao uma da outra. O nome e montado aqui do mesmo jeito
- * que a biblioteca monta. */
-const PREFIXO =
+const PREFIX =
   env.APP_COOKIE_PREFIX ||
   crypto.createHash('sha256').update(env.APP_CLIENT_ID).digest('hex').slice(0, 8);
-const COOKIE_SESSAO = `${PREFIXO}_session`;
-const COOKIE_TX = `${PREFIXO}_tx`;
-const COOKIE_CSRF = `${PREFIXO}_csrf`;
+const COOKIE_SESSION = `${PREFIX}_session`;
+const COOKIE_TX = `${PREFIX}_tx`;
+const COOKIE_CSRF = `${PREFIX}_csrf`;
 
-// `host.docker.internal` e o alias do container; aqui roda na maquina.
 const SSO_DB = env.SSO_TEST_DATABASE_URL.replace('host.docker.internal', '127.0.0.1');
 
 const SSO = env.SSO_ISSUER.replace(/\/+$/, '');
-/* Duas bases, porque o front e a API deixaram de ser a mesma coisa.
- *
- * `APP_PUBLICO` e o que o BACKEND acredita ser seu endereco publico: em
- * desenvolvimento, o front em :5174 proxiando /api. E dali que sai a
- * redirect_uri registrada no SSO, e e contra essa origem que o guard compara
- * o header `Origin`.
- *
- * `APP` e o transporte: o container em :3000, que e quem de fato atende. Este
- * teste faz o papel do proxy do front, reescrevendo a origem quando segue um
- * Location. Sem isso ele tentaria falar com um front que ainda nao existe.
- */
-const APP_PUBLICO = env.APP_BASE_URL.replace(/\/+$/, '');
-const APP_PUBLICO_ORIGEM = new URL(APP_PUBLICO).origin;
+const APP_PUBLIC = env.APP_BASE_URL.replace(/\/+$/, '');
+const APP_PUBLIC_ORIGIN = new URL(APP_PUBLIC).origin;
 const APP = env.APP_TEST_BASE_URL.replace(/\/+$/, '');
 
-/** Troca a origem publica pela do container, como o proxy do front faria. */
-const comTransporte = (url) =>
-  String(url).replace(APP_PUBLICO_ORIGEM, new URL(APP).origin);
-/* As rotas administrativas do SSO exigem `Authorization: Bearer` de um
- * usuario com papel no projeto do proprio SSO. O objeto e preenchido no
- * preparo, depois de o token ser emitido. */
+const withTransport = (url) =>
+  String(url).replace(APP_PUBLIC_ORIGIN, new URL(APP).origin);
 const admin = { 'content-type': 'application/json' };
 
-const OPERADOR = 'e2e-krloc-operador@exemplo.com';
+const OPERATOR = 'e2e-krloc-operador@exemplo.com';
 
 const db = new Client({ connectionString: SSO_DB });
 
-/* O que a rodada criou no SSO e precisa sair no fim, por id e e-mail exatos. A
- * limpeza roda tambem quando a rodada quebra no meio: sem isso, um erro deixaria
- * o operador de teste com o papel raiz do SSO. */
-const rodada = { emails: [OPERADOR], papelId: null, papelVazioId: null, rotas: [] };
+const run = { emails: [OPERATOR], roleId: null, emptyRoleId: null, routes: [] };
 
-async function limparRodada() {
-  const usuarios = await purgeTestUsers(db, rodada.emails);
+async function cleanRun() {
+  const users = await purgeTestUsers(db, run.emails);
 
-  for (const id of [rodada.papelId, rodada.papelVazioId].filter(Boolean)) {
+  for (const id of [run.roleId, run.emptyRoleId].filter(Boolean)) {
     await db.query('DELETE FROM "Permission" WHERE "roleId" = $1', [id]);
     await db.query('DELETE FROM "Role" WHERE id = $1', [id]);
   }
 
-  if (rodada.rotas.length) {
-    await db.query('DELETE FROM "Permission" WHERE "routeId" = ANY($1)', [rodada.rotas]);
-    await db.query('DELETE FROM "Route" WHERE id = ANY($1)', [rodada.rotas]);
+  if (run.routes.length) {
+    await db.query('DELETE FROM "Permission" WHERE "routeId" = ANY($1)', [run.routes]);
+    await db.query('DELETE FROM "Route" WHERE id = ANY($1)', [run.routes]);
   }
 
-  return usuarios;
+  return users;
 }
 
 let pass = 0;
@@ -145,7 +96,6 @@ const check = (name, ok, detail = '') => {
   ok ? pass++ : fail++;
 };
 
-/** Abre um cookie selado, para inspecionar e reescrever o que ha dentro. */
 const openCookie = (key, token) => {
   const [iv, tag, ct] = token.split('.');
   const d = crypto.createDecipheriv('aes-256-gcm', Buffer.from(key, 'hex'), Buffer.from(iv, 'base64url'));
@@ -168,30 +118,22 @@ const readCookies = (res) =>
 const get = (url, cookie) =>
   fetch(url, { redirect: 'manual', headers: cookie ? { cookie } : {} });
 
-/* Rota que o papel nao alcanca responde com o mesmo 404 de um caminho que nao
- * existe (RFC 9110 secao 15.5.4). Passar pelo RBAC e, entao, qualquer resposta
- * que nao seja 401, 403 nem esse 404: um controller sem dados tambem devolve
- * 404, mas com a mensagem dele. `caminho` vai sem o prefixo global. */
-const negadoPeloGuard = async (res, method, caminho) =>
+const deniedByGuard = async (res, method, routePath) =>
   res.status === 404 &&
   (await res.clone().json().catch(() => null))?.message ===
-    `Cannot ${method} ${new URL(APP).pathname}${caminho}`;
+    `Cannot ${method} ${new URL(APP).pathname}${routePath}`;
 
-const passouPeloRbac = async (res, method, caminho) =>
-  res.status !== 401 && res.status !== 403 && !(await negadoPeloGuard(res, method, caminho));
+const passedRbac = async (res, method, routePath) =>
+  res.status !== 401 && res.status !== 403 && !(await deniedByGuard(res, method, routePath));
 
 (async () => {
   await db.connect();
 
-  /* Credencial administrativa: um usuario do banco com o papel raiz do SSO, e
-   * um token vindo do fluxo OAuth completo. A raiz nao depende do catalogo, e e
-   * o que deixa o teste rodar num SSO recem-criado, onde os papeis padrao nascem
-   * vazios. */
-  await ensureProjectUser(db, { projectName: 'SSO', email: OPERADOR, name: 'E2E KRLoc', role: 'SUPERADMIN' });
-  const operador = await mintAdminToken(db, {
-    issuer: SSO, cookieSecret: SSO_COOKIE_SECRET, email: OPERADOR,
+  await ensureProjectUser(db, { projectName: 'SSO', email: OPERATOR, name: 'E2E KRLoc', role: 'SUPERADMIN' });
+  const operator = await mintAdminToken(db, {
+    issuer: SSO, cookieSecret: SSO_COOKIE_SECRET, email: OPERATOR,
   });
-  admin.authorization = `Bearer ${operador.token}`;
+  admin.authorization = `Bearer ${operator.token}`;
 
   const project = (
     await db.query(`SELECT id, status FROM "Project" WHERE "clientId" = $1`, [env.APP_CLIENT_ID || env.KRLOC_CLIENT_ID])
@@ -211,51 +153,47 @@ const passouPeloRbac = async (res, method, caminho) =>
 
   const tag = crypto.randomBytes(4).toString('hex');
 
-  const ssoApi = async (method, rota, body) => {
-    const res = await fetch(`${SSO}${rota}`, {
+  const ssoApi = async (method, route, body) => {
+    const res = await fetch(`${SSO}${route}`, {
       method, headers: admin, body: body ? JSON.stringify(body) : undefined,
     });
     return { status: res.status, json: await res.json().catch(() => null) };
   };
 
-  /* Papel desta rodada, com exatamente as rotas que o teste usa. Nao depende do
-   * que o catalogo do krloc concede aos papeis padrao, que num SSO novo nascem
-   * vazios. Rota que ja existe no catalogo e usada como esta; a que faltar, o
-   * teste cadastra e apaga no fim. */
-  const rotaDoKrloc = async (method, caminho) => {
-    const existente = (await db.query(
+  const krlocRoute = async (method, routePath) => {
+    const existing = (await db.query(
       'SELECT id FROM "Route" WHERE "projectId" = $1 AND path = $2 AND method = $3::"Method"',
-      [project.id, caminho, method],
+      [project.id, routePath, method],
     )).rows[0];
 
-    if (existente) return existente.id;
+    if (existing) return existing.id;
 
-    const criada = await ssoApi('POST', '/route', { projectId: project.id, path: caminho, method });
+    const created = await ssoApi('POST', '/route', { projectId: project.id, path: routePath, method });
 
-    if (criada.status !== 201) throw new Error(`o SSO nao cadastrou ${method} ${caminho}: HTTP ${criada.status}`);
+    if (created.status !== 201) throw new Error(`o SSO nao cadastrou ${method} ${routePath}: HTTP ${created.status}`);
 
-    rodada.rotas.push(criada.json.id);
-    return criada.json.id;
+    run.routes.push(created.json.id);
+    return created.json.id;
   };
 
-  const PAPEL = `E2E_KRLOC_${tag.toUpperCase()}`;
-  const papel = await ssoApi('POST', '/role', { projectId: project.id, name: PAPEL });
-  rodada.papelId = papel.json?.id ?? null;
-  check(`papel customizado ${PAPEL} criado no krloc`, papel.status === 201, `HTTP ${papel.status}`);
+  const ROLE = `E2E_KRLOC_${tag.toUpperCase()}`;
+  const role = await ssoApi('POST', '/role', { projectId: project.id, name: ROLE });
+  run.roleId = role.json?.id ?? null;
+  check(`papel customizado ${ROLE} criado no krloc`, role.status === 201, `HTTP ${role.status}`);
 
-  const concede = async (method, caminho) => {
-    const concedida = await ssoApi('POST', '/permission', {
-      roleId: papel.json.id, routeId: await rotaDoKrloc(method, caminho),
+  const grants = async (method, routePath) => {
+    const granted = await ssoApi('POST', '/permission', {
+      roleId: role.json.id, routeId: await krlocRoute(method, routePath),
     });
 
-    if (concedida.status !== 201) throw new Error(`o SSO nao concedeu ${method} ${caminho}: HTTP ${concedida.status}`);
+    if (granted.status !== 201) throw new Error(`o SSO nao concedeu ${method} ${routePath}: HTTP ${granted.status}`);
   };
 
-  const CONCEDIDAS = [['GET', '/equipment'], ['GET', '/equipment/:id'], ['POST', '/equipment']];
+  const GRANTED = [['GET', '/equipment'], ['GET', '/equipment/:id'], ['POST', '/equipment']];
 
-  for (const [method, caminho] of CONCEDIDAS) await concede(method, caminho);
+  for (const [method, routePath] of GRANTED) await grants(method, routePath);
 
-  rodada.emails.push(`krloc-${tag}@exemplo.com`);
+  run.emails.push(`krloc-${tag}@exemplo.com`);
 
   const user = await (
     await fetch(`${SSO}/user`, {
@@ -264,15 +202,10 @@ const passouPeloRbac = async (res, method, caminho) =>
     })
   ).json();
 
-  const vinculo = await ssoApi('POST', '/projectuser', { userId: user.id, projectId: project.id, roleId: papel.json.id });
-  check(`usuario associado ao krloc com o papel ${PAPEL}`, vinculo.status === 201, `HTTP ${vinculo.status}`);
+  const membership = await ssoApi('POST', '/projectuser', { userId: user.id, projectId: project.id, roleId: role.json.id });
+  check(`usuario associado ao krloc com o papel ${ROLE}`, membership.status === 201, `HTTP ${membership.status}`);
 
   const sessionId = crypto.randomUUID();
-  /* `expiresAt` e TIMESTAMP sem fuso, e o Prisma grava e le essa coluna sempre
-   * em UTC. O `now()` do Postgres devolve a hora local do servidor, que nesta
-   * maquina esta em America/Sao_Paulo: a sessao nasceria tres horas no passado
-   * e o servidor a descartaria como expirada. `AT TIME ZONE 'utc'` alinha o SQL
-   * cru do teste com a convencao do Prisma. */
   await db.query(
     `INSERT INTO "AuthSession" (id, "userId", "expiresAt")
      VALUES ($1, $2, (now() AT TIME ZONE 'utc') + interval '1 hour')`,
@@ -300,59 +233,38 @@ const passouPeloRbac = async (res, method, caminho) =>
   const authorized = await get(authorizeUrl.toString(), ssoCookie);
   const callbackUrl = authorized.headers.get('location');
   check('SSO emite o code para a redirect_uri do app',
-    authorized.status === 302 && callbackUrl?.startsWith(`${APP_PUBLICO}/auth/callback`),
+    authorized.status === 302 && callbackUrl?.startsWith(`${APP_PUBLIC}/auth/callback`),
     `HTTP ${authorized.status}`);
 
-  const callback = await get(comTransporte(callbackUrl), txCookie);
+  const callback = await get(withTransport(callbackUrl), txCookie);
   let appCookie = readCookies(callback);
-  /* O callback devolve um documento da PROPRIA origem, nao um 302. E o que
-   * permite `SameSite=Strict` na sessao: o retorno do provedor federado e uma
-   * cadeia de redirects que comeca em outro site, e um 302 dentro dela faria a
-   * pagina de destino chegar sem cookie, com 401 e laco de login. Navegacao
-   * iniciada por este documento e same-site, e aí o cookie vai. */
-  const corpoCallback = await callback.clone().text();
+  const bodyCallback = await callback.clone().text();
   check('callback troca o code e cria a sessao', callback.status === 200, `HTTP ${callback.status}`);
   check('callback devolve documento da propria origem, nao 302',
-    /http-equiv="refresh"/i.test(corpoCallback),
+    /http-equiv="refresh"/i.test(bodyCallback),
     callback.headers.get('content-type') ?? 'sem content-type');
-  const destinoBounce = /url=([^"']+)/i.exec(corpoCallback)?.[1] ?? '';
+  const destinationBounce = /url=([^"']+)/i.exec(bodyCallback)?.[1] ?? '';
   check('o bounce so aponta para a propria origem, nunca para outro site',
-    destinoBounce.startsWith('/') || new URL(destinoBounce).origin === APP_PUBLICO_ORIGEM,
-    destinoBounce);
-  check('cookie de sessao do app foi emitido', appCookie.includes(COOKIE_SESSAO));
+    destinationBounce.startsWith('/') || new URL(destinationBounce).origin === APP_PUBLIC_ORIGIN,
+    destinationBounce);
+  check('cookie de sessao do app foi emitido', appCookie.includes(COOKIE_SESSION));
 
-  const sessionCookies = (callback.headers.getSetCookie?.() ?? []).find((c) => c.startsWith(COOKIE_SESSAO));
+  const sessionCookies = (callback.headers.getSetCookie?.() ?? []).find((c) => c.startsWith(COOKIE_SESSION));
   check('cookie de sessao e HttpOnly', /HttpOnly/i.test(sessionCookies ?? ''));
 
-  /* REGRESSAO. Cookie nao e isolado por porta (RFC 6265 secao 8.5): duas
-   * aplicacoes em localhost dividem o mesmo pote. Com nome fixo, a segunda a
-   * logar sobrescreveria a sessao da primeira, e o cookie anti-CSRF de uma
-   * seria legivel pelo JavaScript da outra. */
   check('o cookie leva prefixo desta aplicacao, nao um nome generico',
-    COOKIE_SESSAO !== 'app_session' && (sessionCookies ?? '').startsWith(COOKIE_SESSAO),
-    COOKIE_SESSAO);
-  const valorCookie = (sessionCookies ?? '').split(';')[0].split('=').slice(1).join('=');
+    COOKIE_SESSION !== 'app_session' && (sessionCookies ?? '').startsWith(COOKIE_SESSION),
+    COOKIE_SESSION);
+  const cookieValue = (sessionCookies ?? '').split(';')[0].split('=').slice(1).join('=');
 
-  /* O cookie e `iv.tag.texto cifrado`, tudo em base64url. Um JWT em claro
-   * comecaria um desses pedacos com `eyJ`, que e `{"` em base64.
-   *
-   * Procurar `eyJ` em QUALQUER posicao, como estava antes, falhava sozinho de
-   * vez em quando: em 1700 caracteres aleatorios, a chance de a sequencia
-   * aparecer por acaso passa de meio por cento. Teste que falha as vezes deixa
-   * de ser conferido. */
   check('nenhum token no cookie em claro',
-    valorCookie.split('.').every((pedaco) => !pedaco.startsWith('eyJ')),
+    cookieValue.split('.').every((chunk) => !chunk.startsWith('eyJ')),
     'conteudo cifrado');
 
-  // REGRESSAO. Navegador descarta cookie individual acima de 4096 bytes,
-  // em silencio: sem erro, sem log, sem nada. O `fetch` deste teste NAO
-  // aplica esse limite, entao ele passava enquanto nenhum navegador
-  // conseguia logar. Aconteceu de verdade: a lista de permissoes dentro do
-  // token levou o cookie a 4266 bytes.
   check('cookie de sessao cabe no limite de 4096 bytes do navegador',
-    valorCookie.length < 4096, `${valorCookie.length} bytes`);
+    cookieValue.length < 4096, `${cookieValue.length} bytes`);
   check('cookie com folga de pelo menos 25%',
-    valorCookie.length < 3072, `${valorCookie.length} de 4096`);
+    cookieValue.length < 3072, `${cookieValue.length} de 4096`);
 
   console.log('\n=== rotas com sessao ===');
   const me = await get(`${APP}/auth/me`, appCookie);
@@ -360,26 +272,23 @@ const passouPeloRbac = async (res, method, caminho) =>
   check('GET /auth/me devolve a identidade', me.status === 200 && identity?.email === `krloc-${tag}@exemplo.com`,
     identity?.email ?? `HTTP ${me.status}`);
   check('as permissoes do papel chegaram ao app, e so elas',
-    identity?.permissions?.length === CONCEDIDAS.length,
+    identity?.permissions?.length === GRANTED.length,
     `${identity?.permissions?.length ?? 0} permissoes`);
 
   const equipment = await get(`${APP}/equipment`, appCookie);
   check('GET /equipment com sessao passa pelo RBAC',
-    await passouPeloRbac(equipment, 'GET', '/equipment'),
+    await passedRbac(equipment, 'GET', '/equipment'),
     `HTTP ${equipment.status} (404 do controller = sem dados, mas autorizado)`);
 
   const ZERO = '00000000-0000-4000-8000-000000000000';
   const byId = await get(`${APP}/equipment/${ZERO}`, appCookie);
   check('rota com :id casa com a permissao parametrizada',
-    await passouPeloRbac(byId, 'GET', `/equipment/${ZERO}`), `HTTP ${byId.status}`);
+    await passedRbac(byId, 'GET', `/equipment/${ZERO}`), `HTTP ${byId.status}`);
 
-  /* O front escolhe o texto pelo codigo, e nunca mostra o `message`. O 404 do
-   * controller traz o codigo; o do guard continua igual ao de caminho que nao
-   * existe, sem codigo, como a secao acima confere. */
-  const corpoById = await byId.clone().json().catch(() => null);
+  const bodyById = await byId.clone().json().catch(() => null);
   check('registro que nao existe vem com codigo, e nao com frase',
-    byId.status === 404 && corpoById?.error === 'equipment_not_found' && corpoById?.statusCode === 404,
-    `HTTP ${byId.status} ${corpoById?.error}`);
+    byId.status === 404 && bodyById?.error === 'equipment_not_found' && bodyById?.statusCode === 404,
+    `HTTP ${byId.status} ${bodyById?.error}`);
 
   console.log('\n=== token entregue ao cliente (RFC 10017 secao 6.2.2.1) ===');
   const tokenRes = await get(`${APP}/auth/token`, appCookie);
@@ -391,7 +300,6 @@ const passouPeloRbac = async (res, method, caminho) =>
     `${grant?.expires_in}s`);
   check('Cache-Control: no-store na entrega do token',
     tokenRes.headers.get('cache-control') === 'no-store', tokenRes.headers.get('cache-control'));
-  // RFC 10017 secao 6.2.2.2: o refresh token NAO acompanha o access token.
   check('refresh_token NAO e entregue ao cliente', !('refresh_token' in (grant ?? {})));
 
   const bearer = { Authorization: `Bearer ${grant.access_token}` };
@@ -399,7 +307,7 @@ const passouPeloRbac = async (res, method, caminho) =>
   console.log('\n=== Authorization: Bearer, sem cookie nenhum ===');
   const viaBearer = await fetch(`${APP}/equipment`, { headers: bearer, redirect: 'manual' });
   check('GET /equipment so com Bearer passa pelo RBAC',
-    await passouPeloRbac(viaBearer, 'GET', '/equipment'),
+    await passedRbac(viaBearer, 'GET', '/equipment'),
     `HTTP ${viaBearer.status} (404 do controller = sem dados, mas autorizado)`);
 
   const meBearer = await fetch(`${APP}/auth/me`, { headers: bearer });
@@ -407,122 +315,102 @@ const passouPeloRbac = async (res, method, caminho) =>
   check('identidade resolvida a partir do Bearer',
     idBearer?.email === `krloc-${tag}@exemplo.com`, idBearer?.email ?? `HTTP ${meBearer.status}`);
 
-  const ruim = await fetch(`${APP}/equipment`, { headers: { Authorization: 'Bearer nao.e.um.jwt' } });
-  const corpoRuim = await ruim.clone().json().catch(() => null);
+  const bad = await fetch(`${APP}/equipment`, { headers: { Authorization: 'Bearer nao.e.um.jwt' } });
+  const badBody = await bad.clone().json().catch(() => null);
   check('Bearer invalido devolve 401 com invalid_token (RFC 6750 secao 3.1)',
-    ruim.status === 401 && corpoRuim?.error === 'invalid_token', `HTTP ${ruim.status} ${corpoRuim?.error}`);
+    bad.status === 401 && badBody?.error === 'invalid_token', `HTTP ${bad.status} ${badBody?.error}`);
 
-  const semNada = await fetch(`${APP}/equipment`);
-  check('sem cookie e sem Bearer devolve 401', semNada.status === 401, `HTTP ${semNada.status}`);
+  const withNothing = await fetch(`${APP}/equipment`);
+  check('sem cookie e sem Bearer devolve 401', withNothing.status === 401, `HTTP ${withNothing.status}`);
 
   console.log('\n=== sem permissao, a rota responde como se nao existisse (RFC 9110 secao 15.5.4) ===');
 
-  /* `/accessory/:id` existe no codigo do krloc, mas o papel desta rodada nao a
-   * alcanca: ou ela nao esta no catalogo do SSO, ou esta sem permissao para o
-   * papel. Para quem nao pode usar, e indistinguivel de um caminho que nao
-   * existe. Sem sessao continua 401, porque a pessoa precisa saber que tem de
-   * entrar. */
-  const negada = await get(`${APP}/accessory/${ZERO}`, appCookie);
-  const corpoNegada = await negada.clone().json().catch(() => null);
-  const inexistente = await get(`${APP}/nao-existe-${tag}`, appCookie);
-  const corpoInexistente = await inexistente.json().catch(() => null);
+  const deniedRes = await get(`${APP}/accessory/${ZERO}`, appCookie);
+  const deniedBody = await deniedRes.clone().json().catch(() => null);
+  const missing = await get(`${APP}/nao-existe-${tag}`, appCookie);
+  const missingBody = await missing.json().catch(() => null);
 
-  check('rota que o papel nao alcanca devolve 404', negada.status === 404, `HTTP ${negada.status}`);
+  check('rota que o papel nao alcanca devolve 404', deniedRes.status === 404, `HTTP ${deniedRes.status}`);
   check('o 404 da rota negada e igual ao de um caminho que nao existe',
-    (await negadoPeloGuard(negada, 'GET', `/accessory/${ZERO}`))
-      && inexistente.status === 404
-      && corpoInexistente?.message === `Cannot GET ${new URL(APP).pathname}/nao-existe-${tag}`
-      && corpoNegada?.error === corpoInexistente?.error,
-    `${corpoNegada?.message} | ${corpoInexistente?.message}`);
+    (await deniedByGuard(deniedRes, 'GET', `/accessory/${ZERO}`))
+      && missing.status === 404
+      && missingBody?.message === `Cannot GET ${new URL(APP).pathname}/nao-existe-${tag}`
+      && deniedBody?.error === missingBody?.error,
+    `${deniedBody?.message} | ${missingBody?.message}`);
   check('o 404 da rota negada nao anuncia como se autentica',
-    !negada.headers.get('www-authenticate'), negada.headers.get('www-authenticate') ?? 'sem WWW-Authenticate');
+    !deniedRes.headers.get('www-authenticate'), deniedRes.headers.get('www-authenticate') ?? 'sem WWW-Authenticate');
 
-  const negadaPorBearer = await fetch(`${APP}/accessory/${ZERO}`, { headers: bearer });
+  const deniedByBearer = await fetch(`${APP}/accessory/${ZERO}`, { headers: bearer });
   check('pelo Bearer, a rota negada tambem responde 404',
-    await negadoPeloGuard(negadaPorBearer, 'GET', `/accessory/${ZERO}`), `HTTP ${negadaPorBearer.status}`);
+    await deniedByGuard(deniedByBearer, 'GET', `/accessory/${ZERO}`), `HTTP ${deniedByBearer.status}`);
 
-  /* Concessao feita no SSO vale sem novo login: antes de negar, o guard pergunta
-   * de novo ao SSO. Entre duas perguntas do mesmo papel ha ao menos 5 segundos,
-   * entao o teste espera esse tanto antes de tentar. */
-  await concede('GET', '/accessory/:id');
+  await grants('GET', '/accessory/:id');
   await new Promise((resolve) => setTimeout(resolve, 5500));
 
-  const recemConcedida = await get(`${APP}/accessory/${ZERO}`, appCookie);
+  const justGranted = await get(`${APP}/accessory/${ZERO}`, appCookie);
   check('permissao concedida no SSO vale na requisicao seguinte, sem novo login',
-    await passouPeloRbac(recemConcedida, 'GET', `/accessory/${ZERO}`), `HTTP ${recemConcedida.status}`);
+    await passedRbac(justGranted, 'GET', `/accessory/${ZERO}`), `HTTP ${justGranted.status}`);
 
   console.log('\n=== papel trocado no SSO chega sem novo login (introspeccao, RFC 7662) ===');
 
-  /* O token desta sessao saiu com o papel da rodada. Trocado o papel no SSO, a
-   * aplicacao descobre na pergunta seguinte, pede um token novo sozinha e ja
-   * decide pelo papel novo. Antes, isso esperava o token vencer, em ate 15
-   * minutos, ou um novo login. */
-  // Um papel sem rota nenhuma, desta rodada: os padrao do projeto real podem ter
-  // permissao marcada no console.
-  const PAPEL_VAZIO = `E2E_VAZIO_${tag.toUpperCase()}`;
-  const papelVazio = await ssoApi('POST', '/role', { projectId: project.id, name: PAPEL_VAZIO });
-  rodada.papelVazioId = papelVazio.json?.id ?? null;
-  const trocou = await ssoApi('PUT', `/projectuser/${project.id}/${user.id}`, { roleId: papelVazio.json?.id });
-  check(`papel da pessoa trocado no SSO para ${PAPEL_VAZIO}, que nao alcanca nada`,
-    trocou.status === 200, `HTTP ${trocou.status}`);
+  const EMPTY_ROLE = `E2E_VAZIO_${tag.toUpperCase()}`;
+  const emptyRole = await ssoApi('POST', '/role', { projectId: project.id, name: EMPTY_ROLE });
+  run.emptyRoleId = emptyRole.json?.id ?? null;
+  const swapped = await ssoApi('PUT', `/projectuser/${project.id}/${user.id}`, { roleId: emptyRole.json?.id });
+  check(`papel da pessoa trocado no SSO para ${EMPTY_ROLE}, que nao alcanca nada`,
+    swapped.status === 200, `HTTP ${swapped.status}`);
 
-  const meDepoisDaTroca = await get(`${APP}/auth/me`, appCookie);
-  const identidadeTrocada = meDepoisDaTroca.ok ? await meDepoisDaTroca.json() : null;
+  const meAfterSwap = await get(`${APP}/auth/me`, appCookie);
+  const swappedIdentity = meAfterSwap.ok ? await meAfterSwap.json() : null;
   check('GET /auth/me ja traz o papel novo, sem novo login',
-    JSON.stringify(identidadeTrocada?.roles) === JSON.stringify([PAPEL_VAZIO])
-      && identidadeTrocada?.permissions?.length === 0,
-    `${JSON.stringify(identidadeTrocada?.roles)} com ${identidadeTrocada?.permissions?.length} permissao(oes)`);
+    JSON.stringify(swappedIdentity?.roles) === JSON.stringify([EMPTY_ROLE])
+      && swappedIdentity?.permissions?.length === 0,
+    `${JSON.stringify(swappedIdentity?.roles)} com ${swappedIdentity?.permissions?.length} permissao(oes)`);
 
-  const cookieRenovado = readCookies(meDepoisDaTroca);
+  const renewedCookie = readCookies(meAfterSwap);
   check('a aplicacao pediu um token novo ao SSO e o devolveu na mesma resposta',
-    cookieRenovado.includes(COOKIE_SESSAO), cookieRenovado ? 'cookie de sessao novo' : 'sem Set-Cookie');
-  appCookie = cookieRenovado || appCookie;
+    renewedCookie.includes(COOKIE_SESSION), renewedCookie ? 'cookie de sessao novo' : 'sem Set-Cookie');
+  appCookie = renewedCookie || appCookie;
 
-  const equipmentAposTroca = await get(`${APP}/equipment`, appCookie);
+  const equipmentAfterSwap = await get(`${APP}/equipment`, appCookie);
   check('o papel novo ja decide: a rota que o antigo alcancava responde 404',
-    await negadoPeloGuard(equipmentAposTroca, 'GET', '/equipment'), `HTTP ${equipmentAposTroca.status}`);
+    await deniedByGuard(equipmentAfterSwap, 'GET', '/equipment'), `HTTP ${equipmentAfterSwap.status}`);
 
-  const bearerAposTroca = await fetch(`${APP}/equipment`, { headers: bearer });
+  const bearerAfterSwap = await fetch(`${APP}/equipment`, { headers: bearer });
   check('pelo Bearer emitido antes da troca tambem vale o papel de agora',
-    await negadoPeloGuard(bearerAposTroca, 'GET', '/equipment'), `HTTP ${bearerAposTroca.status}`);
+    await deniedByGuard(bearerAfterSwap, 'GET', '/equipment'), `HTTP ${bearerAfterSwap.status}`);
 
-  // Devolve o papel da rodada: o resto da suite conta com ele.
-  await ssoApi('PUT', `/projectuser/${project.id}/${user.id}`, { roleId: papel.json.id });
-  const meDeVolta = await get(`${APP}/auth/me`, appCookie);
-  const identidadeDeVolta = meDeVolta.ok ? await meDeVolta.json() : null;
-  appCookie = readCookies(meDeVolta) || appCookie;
+  await ssoApi('PUT', `/projectuser/${project.id}/${user.id}`, { roleId: role.json.id });
+  const meBack = await get(`${APP}/auth/me`, appCookie);
+  const identityBack = meBack.ok ? await meBack.json() : null;
+  appCookie = readCookies(meBack) || appCookie;
   check('devolvido o papel, a sessao volta a alcancar o que ele concede, ainda sem novo login',
-    JSON.stringify(identidadeDeVolta?.roles) === JSON.stringify([PAPEL]), JSON.stringify(identidadeDeVolta?.roles));
+    JSON.stringify(identityBack?.roles) === JSON.stringify([ROLE]), JSON.stringify(identityBack?.roles));
 
-  /* Quem usa Bearer nao tem refresh token: o token que ele segura continua com o
-   * estado que o SSO deu na ultima pergunta, por ate `grantCheckSeconds`. O
-   * caminho dele e pegar outro em GET /auth/token, que pergunta ao SSO na hora. */
-  const tokenDeVolta = await get(`${APP}/auth/token`, appCookie);
-  const grantDeVolta = tokenDeVolta.ok ? await tokenDeVolta.json() : null;
-  appCookie = readCookies(tokenDeVolta) || appCookie;
-  bearer.Authorization = `Bearer ${grantDeVolta?.access_token}`;
-  check('GET /auth/token entrega um token com o papel de agora', !!grantDeVolta?.access_token,
-    `HTTP ${tokenDeVolta.status}`);
+  const tokenBack = await get(`${APP}/auth/token`, appCookie);
+  const grantBack = tokenBack.ok ? await tokenBack.json() : null;
+  appCookie = readCookies(tokenBack) || appCookie;
+  bearer.Authorization = `Bearer ${grantBack?.access_token}`;
+  check('GET /auth/token entrega um token com o papel de agora', !!grantBack?.access_token,
+    `HTTP ${tokenBack.status}`);
 
   console.log('\n=== o guard hidrata o Authorization a partir da sessao ===');
   const homeCookie = await get(`${APP}/home`, appCookie);
-  const sessaoCookie = homeCookie.ok ? await homeCookie.json() : null;
+  const sessionCookie = homeCookie.ok ? await homeCookie.json() : null;
   check('GET /home so com cookie responde 200', homeCookie.status === 200, `HTTP ${homeCookie.status}`);
-  check('o handler recebeu o access token', sessaoCookie?.tokenDisponivel === true);
-  // Sem isto, quem se identificou por cookie chegaria ao controller sem
-  // header, e o codigo de dominio teria de saber distinguir os dois casos.
+  check('o handler recebeu o access token', sessionCookie?.tokenAvailable === true);
   check('Authorization: Bearer chegou preenchido ao handler',
-    sessaoCookie?.authorizationHeader === true);
-  check('identidade correta na resposta', sessaoCookie?.user?.email === `krloc-${tag}@exemplo.com`,
-    sessaoCookie?.user?.email);
+    sessionCookie?.authorizationHeader === true);
+  check('identidade correta na resposta', sessionCookie?.user?.email === `krloc-${tag}@exemplo.com`,
+    sessionCookie?.user?.email);
 
   const homeBearer = await fetch(`${APP}/home`, { headers: bearer });
-  const sessaoBearer = homeBearer.ok ? await homeBearer.json() : null;
+  const sessionBearer = homeBearer.ok ? await homeBearer.json() : null;
   check('mesma resposta quando o cliente envia Bearer',
-    sessaoBearer?.authorizationHeader === true && sessaoBearer?.tokenDisponivel === true,
+    sessionBearer?.authorizationHeader === true && sessionBearer?.tokenAvailable === true,
     `HTTP ${homeBearer.status}`);
   check('os dois caminhos resolvem o mesmo usuario',
-    sessaoBearer?.user?.id === sessaoCookie?.user?.id);
+    sessionBearer?.user?.id === sessionCookie?.user?.id);
 
   console.log('\n=== CSRF: cookie sozinho nao basta para escrever (RFC 10017 6.2.3.2) ===');
 
@@ -539,186 +427,164 @@ const passouPeloRbac = async (res, method, caminho) =>
     (callback.headers.getSetCookie?.() ?? []).some(
       (c) => c.startsWith(`${COOKIE_CSRF}=`) && !/HttpOnly/i.test(c)));
 
-  const escrever = (headers) =>
+  const write = (headers) =>
     fetch(`${APP}/equipment`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: '{}' });
 
-  // O front reage ao codigo: e por ele que relê o token e repete a escrita.
-  const codigo = async (res) => (await res.clone().json().catch(() => null))?.error;
+  const code = async (res) => (await res.clone().json().catch(() => null))?.error;
 
-  const semToken = await escrever({ cookie: appCookie });
+  const noToken = await write({ cookie: appCookie });
   check('POST so com cookie, sem o header, devolve 403 com csrf_token_invalid',
-    semToken.status === 403 && await codigo(semToken) === 'csrf_token_invalid', `HTTP ${semToken.status}`);
+    noToken.status === 403 && await code(noToken) === 'csrf_token_invalid', `HTTP ${noToken.status}`);
 
-  const tokenErrado = await escrever({ cookie: appCookie, 'x-csrf-token': 'a'.repeat(csrf.length) });
+  const wrongToken = await write({ cookie: appCookie, 'x-csrf-token': 'a'.repeat(csrf.length) });
   check('POST com token anti-CSRF errado devolve 403 com csrf_token_invalid',
-    tokenErrado.status === 403 && await codigo(tokenErrado) === 'csrf_token_invalid', `HTTP ${tokenErrado.status}`);
+    wrongToken.status === 403 && await code(wrongToken) === 'csrf_token_invalid', `HTTP ${wrongToken.status}`);
 
-  const origemEstranha = await escrever({
+  const strangeOrigin = await write({
     cookie: appCookie, 'x-csrf-token': csrf, origin: 'https://site-do-atacante.example',
   });
   check('Origin de outro site e recusado mesmo com o token certo, com origin_not_allowed',
-    origemEstranha.status === 403 && await codigo(origemEstranha) === 'origin_not_allowed',
-    `HTTP ${origemEstranha.status}`);
+    strangeOrigin.status === 403 && await code(strangeOrigin) === 'origin_not_allowed',
+    `HTTP ${strangeOrigin.status}`);
   check('a recusa de origem nao repete a origem recebida',
-    !(await origemEstranha.clone().text()).includes('site-do-atacante'));
+    !(await strangeOrigin.clone().text()).includes('site-do-atacante'));
 
-  // 400 aqui significa que passou pelo guard e chegou a validacao do corpo, que
-  // e exatamente o que se quer provar. O que nao pode e 401, 403 ou o 404 do guard.
-  const comToken = await escrever({ cookie: appCookie, 'x-csrf-token': csrf, origin: APP_PUBLICO_ORIGEM });
+  const withToken = await write({ cookie: appCookie, 'x-csrf-token': csrf, origin: APP_PUBLIC_ORIGIN });
   check('POST com cookie MAIS o header passa pelo guard',
-    await passouPeloRbac(comToken, 'POST', '/equipment'), `HTTP ${comToken.status}`);
+    await passedRbac(withToken, 'POST', '/equipment'), `HTTP ${withToken.status}`);
 
-  const recusa = await comToken.clone().json().catch(() => null);
+  const refusal = await withToken.clone().json().catch(() => null);
   check('corpo recusado vem como validation_failed, com o codigo de cada campo',
-    comToken.status === 400 && recusa?.error === 'validation_failed'
-      && recusa?.fields?.some((f) => f.field === 'name' && typeof f.error === 'string'),
-    `${recusa?.error} ${JSON.stringify(recusa?.fields?.map((f) => `${f.field}:${f.error}`))}`);
+    withToken.status === 400 && refusal?.error === 'validation_failed'
+      && refusal?.fields?.some((f) => f.field === 'name' && typeof f.error === 'string'),
+    `${refusal?.error} ${JSON.stringify(refusal?.fields?.map((f) => `${f.field}:${f.error}`))}`);
 
-  // O Bearer atual: o primeiro guarda, por ate 30 segundos, o papel vazio que o
-  // SSO respondeu na troca de papel acima.
-  const soBearer = await escrever({ authorization: bearer.Authorization });
+  const bearerOnly = await write({ authorization: bearer.Authorization });
   check('Bearer dispensa o token anti-CSRF: o navegador nunca o anexa sozinho',
-    await passouPeloRbac(soBearer, 'POST', '/equipment'), `HTTP ${soBearer.status}`);
+    await passedRbac(bearerOnly, 'POST', '/equipment'), `HTTP ${bearerOnly.status}`);
 
-  const leitura = await get(`${APP}/equipment`, appCookie);
+  const read = await get(`${APP}/equipment`, appCookie);
   check('GET nao exige o header: metodo seguro nao muda estado',
-    await passouPeloRbac(leitura, 'GET', '/equipment'), `HTTP ${leitura.status}`);
+    await passedRbac(read, 'GET', '/equipment'), `HTTP ${read.status}`);
 
   console.log('\n=== refresh token vivo renova o access token morto, sem login ===');
 
-  /* O cenario que importa: o access token venceu, o refresh token nao. Ninguem
-   * deve ver tela de login. O teste envelhece o access token DENTRO do cookie,
-   * sem tocar no refresh token, e confere que a requisicao seguinte passa. */
-  const sessaoAtual = openCookie(env.COOKIE_SECRET, new RegExp(`${COOKIE_SESSAO}=([^;]+)`).exec(appCookie)[1]);
+  const currentSession = openCookie(env.COOKIE_SECRET, new RegExp(`${COOKIE_SESSION}=([^;]+)`).exec(appCookie)[1]);
 
-  const sessaoVencida = sealCookie(env.COOKIE_SECRET, {
-    ...sessaoAtual,
+  const expiredSession = sealCookie(env.COOKIE_SECRET, {
+    ...currentSession,
     expiresAt: Math.floor(Date.now() / 1000) - 10,
   });
-  const cookieVencido = appCookie.replace(new RegExp(`${COOKIE_SESSAO}=[^;]+`), `${COOKIE_SESSAO}=${sessaoVencida}`);
+  const expiredCookie = appCookie.replace(new RegExp(`${COOKIE_SESSION}=[^;]+`), `${COOKIE_SESSION}=${expiredSession}`);
 
-  const comTokenVencido = await get(`${APP}/equipment`, cookieVencido);
+  const withExpiredToken = await get(`${APP}/equipment`, expiredCookie);
   check('access token vencido nao manda ninguem ao login',
-    comTokenVencido.status !== 401 && comTokenVencido.status !== 302,
-    `HTTP ${comTokenVencido.status}`);
+    withExpiredToken.status !== 401 && withExpiredToken.status !== 302,
+    `HTTP ${withExpiredToken.status}`);
 
-  const reemitido = (comTokenVencido.headers.getSetCookie?.() ?? [])
-    .find((c) => c.startsWith(COOKIE_SESSAO));
-  check('a resposta ja traz a sessao renovada', !!reemitido, reemitido ? 'app_session reescrito' : 'ausente');
+  const reissued = (withExpiredToken.headers.getSetCookie?.() ?? [])
+    .find((c) => c.startsWith(COOKIE_SESSION));
+  check('a resposta ja traz a sessao renovada', !!reissued, reissued ? 'app_session reescrito' : 'ausente');
 
-  const sessaoNova = openCookie(env.COOKIE_SECRET, new RegExp(`${COOKIE_SESSAO}=([^;]+)`).exec(reemitido)[1]);
+  const newSession = openCookie(env.COOKIE_SECRET, new RegExp(`${COOKIE_SESSION}=([^;]+)`).exec(reissued)[1]);
   check('o access token e outro, emitido na hora',
-    sessaoNova.accessToken !== sessaoAtual.accessToken, 'token trocado');
+    newSession.accessToken !== currentSession.accessToken, 'token trocado');
   check('o refresh token rotacionou junto, como manda a RFC 9700 secao 4.14',
-    sessaoNova.refreshToken !== sessaoAtual.refreshToken, 'familia avancou');
+    newSession.refreshToken !== currentSession.refreshToken, 'familia avancou');
   check('a nova validade esta no futuro',
-    sessaoNova.expiresAt > Math.floor(Date.now() / 1000), `${sessaoNova.expiresAt - Math.floor(Date.now() / 1000)}s`);
+    newSession.expiresAt > Math.floor(Date.now() / 1000), `${newSession.expiresAt - Math.floor(Date.now() / 1000)}s`);
   check('o token anti-CSRF sobrevive a renovacao',
-    sessaoNova.csrfToken === sessaoAtual.csrfToken, 'mesmo valor');
+    newSession.csrfToken === currentSession.csrfToken, 'mesmo valor');
 
-  /* O outro lado: refresh token morto tambem. Aí sim e login, e nao ha o que
-   * fazer em silencio. */
-  const tudoMorto = sealCookie(env.COOKIE_SECRET, {
-    ...sessaoAtual,
-    accessToken: sessaoAtual.accessToken,
+  const allDead = sealCookie(env.COOKIE_SECRET, {
+    ...currentSession,
+    accessToken: currentSession.accessToken,
     refreshToken: 'este-refresh-token-nao-existe-no-sso',
     expiresAt: Math.floor(Date.now() / 1000) - 10,
   });
-  const semSaida = await fetch(`${APP}/equipment`, {
-    headers: { cookie: `${COOKIE_SESSAO}=${tudoMorto}`, 'sec-fetch-dest': 'document', accept: 'text/html' },
+  const noOutput = await fetch(`${APP}/equipment`, {
+    headers: { cookie: `${COOKIE_SESSION}=${allDead}`, 'sec-fetch-dest': 'document', accept: 'text/html' },
     redirect: 'manual',
   });
   check('refresh token morto tambem: aí sim vai para o login',
-    semSaida.status === 302 && (semSaida.headers.get('location') ?? '').includes('/auth/login'),
-    `HTTP ${semSaida.status}`);
+    noOutput.status === 302 && (noOutput.headers.get('location') ?? '').includes('/auth/login'),
+    `HTTP ${noOutput.status}`);
 
-  // A renovacao trocou os tokens; segue com o cookie novo.
-  appCookie = readCookies(comTokenVencido) || appCookie;
+  appCookie = readCookies(withExpiredToken) || appCookie;
 
   console.log('\n=== sessao morta manda ao login e volta para onde a pessoa estava ===');
 
-  /* O cenario: a pessoa esta em /accessories no front, o refresh token morre,
-   * e a proxima chamada precisa relogar sem ela perder o lugar. */
-  const TELA = `${APP_PUBLICO_ORIGEM}/accessories`;
+  const SCREEN = `${APP_PUBLIC_ORIGIN}/accessories`;
 
-  const chamadaDeApi = await fetch(`${APP}/equipment`, {
-    headers: { referer: TELA, 'sec-fetch-dest': 'empty', accept: 'application/json' },
+  const apiCall = await fetch(`${APP}/equipment`, {
+    headers: { referer: SCREEN, 'sec-fetch-dest': 'empty', accept: 'application/json' },
     redirect: 'manual',
   });
-  const corpoApi = await chamadaDeApi.json().catch(() => null);
+  const apiBody = await apiCall.json().catch(() => null);
 
   check('chamada de API sem sessao devolve 401, nao 302',
-    chamadaDeApi.status === 401, `HTTP ${chamadaDeApi.status}`);
+    apiCall.status === 401, `HTTP ${apiCall.status}`);
   check('o corpo diz login_required, com nome estavel',
-    corpoApi?.error === 'login_required', corpoApi?.error ?? 'sem error');
+    apiBody?.error === 'login_required', apiBody?.error ?? 'sem error');
   check('o corpo traz o endereco do login',
-    typeof corpoApi?.login_url === 'string' && corpoApi.login_url.startsWith(`${APP_PUBLICO}/auth/login`),
-    corpoApi?.login_url ?? 'ausente');
+    typeof apiBody?.login_url === 'string' && apiBody.login_url.startsWith(`${APP_PUBLIC}/auth/login`),
+    apiBody?.login_url ?? 'ausente');
   check('o returnTo sai do Referer: a TELA do front, nao a rota de API',
-    corpoApi?.return_to === TELA, corpoApi?.return_to ?? 'ausente');
+    apiBody?.return_to === SCREEN, apiBody?.return_to ?? 'ausente');
   check('o login_url ja carrega o returnTo pronto',
-    (corpoApi?.login_url ?? '').includes(encodeURIComponent(TELA)), 'returnTo embutido');
+    (apiBody?.login_url ?? '').includes(encodeURIComponent(SCREEN)), 'returnTo embutido');
   check('401 de sessao morta traz WWW-Authenticate (RFC 6750 secao 3)',
-    !!chamadaDeApi.headers.get('www-authenticate'),
-    chamadaDeApi.headers.get('www-authenticate') ?? 'ausente');
+    !!apiCall.headers.get('www-authenticate'),
+    apiCall.headers.get('www-authenticate') ?? 'ausente');
 
-  const navegacao = await fetch(`${APP}/equipment`, {
+  const navigation = await fetch(`${APP}/equipment`, {
     headers: { 'sec-fetch-dest': 'document', accept: 'text/html' },
     redirect: 'manual',
   });
-  const paraOLogin = navegacao.headers.get('location') ?? '';
+  const toLogin = navigation.headers.get('location') ?? '';
 
   check('navegacao de pagina sem sessao vira 302, nao 401',
-    navegacao.status === 302, `HTTP ${navegacao.status}`);
+    navigation.status === 302, `HTTP ${navigation.status}`);
   check('o 302 aponta para o login desta aplicacao',
-    paraOLogin.startsWith(`${APP_PUBLICO}/auth/login`), paraOLogin);
+    toLogin.startsWith(`${APP_PUBLIC}/auth/login`), toLogin);
   check('a navegacao volta para a propria URL pedida',
-    paraOLogin.includes(encodeURIComponent('/api/equipment')), paraOLogin);
+    toLogin.includes(encodeURIComponent('/api/equipment')), toLogin);
 
-  // Referer de outro site nao vira destino: seria redirect aberto com passo extra.
-  const refererHostil = await fetch(`${APP}/equipment`, {
+  const hostileReferer = await fetch(`${APP}/equipment`, {
     headers: { referer: 'https://phishing.example/colhe', accept: 'application/json' },
   });
-  const corpoHostil = await refererHostil.json().catch(() => null);
+  const hostileBody = await hostileReferer.json().catch(() => null);
   check('Referer de outro site nao vira returnTo',
-    !(corpoHostil?.return_to ?? '').includes('phishing.example'),
-    corpoHostil?.return_to ?? 'ausente');
+    !(hostileBody?.return_to ?? '').includes('phishing.example'),
+    hostileBody?.return_to ?? 'ausente');
 
-  /* A volta completa: entrar pelo login_url com a sessao do SSO viva devolve a
-   * pessoa exatamente a TELA de onde ela saiu. */
-  const relogin = await fetch(comTransporte(corpoApi.login_url), {
+  const relogin = await fetch(withTransport(apiBody.login_url), {
     redirect: 'manual',
     headers: { cookie: `sso_session=${sealCookie(SSO_COOKIE_SECRET, { authSessionId: sessionId })}` },
   });
   const txRelogin = readCookies(relogin);
-  const autorizaRelogin = await get(relogin.headers.get('location'),
+  const allowsRelogin = await get(relogin.headers.get('location'),
     `sso_session=${sealCookie(SSO_COOKIE_SECRET, { authSessionId: sessionId })}`);
-  const callbackRelogin = await get(comTransporte(autorizaRelogin.headers.get('location')), txRelogin);
-  const corpoRelogin = await callbackRelogin.text();
+  const callbackRelogin = await get(withTransport(allowsRelogin.headers.get('location')), txRelogin);
+  const bodyRelogin = await callbackRelogin.text();
 
   check('o relogin reemite a sessao da aplicacao',
-    readCookies(callbackRelogin).includes(COOKIE_SESSAO), `HTTP ${callbackRelogin.status}`);
+    readCookies(callbackRelogin).includes(COOKIE_SESSION), `HTTP ${callbackRelogin.status}`);
   check('e devolve a pessoa a TELA onde ela estava',
-    corpoRelogin.includes(TELA), /url=([^"']+)/i.exec(corpoRelogin)?.[1] ?? 'sem destino');
+    bodyRelogin.includes(SCREEN), /url=([^"']+)/i.exec(bodyRelogin)?.[1] ?? 'sem destino');
 
-  /* O relogin abriu uma SEGUNDA familia de refresh token para o mesmo usuario,
-   * e ela ficaria viva ate expirar. Encerra aqui, senao a assercao de logout la
-   * embaixo contaria essa sobra e acusaria revogacao incompleta. */
   const cookieRelogin = readCookies(callbackRelogin);
   const csrfRelogin = new RegExp(`${COOKIE_CSRF}=([^;]+)`).exec(cookieRelogin)?.[1] ?? '';
-  const encerraRelogin = await fetch(`${APP}/auth/logout`, {
+  const endsRelogin = await fetch(`${APP}/auth/logout`, {
     method: 'POST',
     headers: { cookie: cookieRelogin, 'x-csrf-token': csrfRelogin },
   });
   check('a sessao aberta pelo relogin tambem e encerrada',
-    encerraRelogin.status === 204, `HTTP ${encerraRelogin.status}`);
+    endsRelogin.status === 204, `HTTP ${endsRelogin.status}`);
 
   console.log('\n=== returnTo nao vira redirect aberto ===');
 
-  /* `returnTo` chega pela query string, entao e entrada do atacante. Sem
-   * filtro, um link para /auth/login?returnTo=https://phishing.example sairia
-   * de um dominio confiavel e encaminharia a vitima para fora. */
-  const destinoDe = async (returnTo) => {
+  const destinationOf = async (returnTo) => {
     const res = await fetch(`${APP}/auth/login?returnTo=${encodeURIComponent(returnTo)}`, {
       redirect: 'manual',
       headers: { cookie: appCookie },
@@ -726,26 +592,24 @@ const passouPeloRbac = async (res, method, caminho) =>
     return res.headers.get('location') ?? '';
   };
 
-  const proprio = APP_PUBLICO_ORIGEM;
+  const own = APP_PUBLIC_ORIGIN;
 
-  for (const hostil of [
+  for (const hostile of [
     'https://phishing.example/colhe',
     '//phishing.example/colhe',
     '/\\phishing.example/colhe',
     'https://phishing.example\\@localhost:3000/',
   ]) {
-    const destino = await destinoDe(hostil);
-    const seguro = destino.startsWith('/') || destino.startsWith(proprio);
-    check(`returnTo "${hostil}" nao leva para fora`, seguro, destino);
+    const destination = await destinationOf(hostile);
+    const safe = destination.startsWith('/') || destination.startsWith(own);
+    check(`returnTo "${hostile}" nao leva para fora`, safe, destination);
   }
 
-  const interno = await destinoDe('/api/equipment');
+  const internal = await destinationOf('/api/equipment');
   check('returnTo relativo da propria aplicacao e respeitado',
-    interno === '/api/equipment', interno);
+    internal === '/api/equipment', internal);
 
   console.log('\n=== regressao: bypass por regex no caminho ===');
-  // A versao anterior montava new RegExp(req.path) e testava a permissao
-  // contra ela, entao um caminho com metacaracteres casava com qualquer coisa.
   for (const evil of ['/.*', '/equipmen.', '/[a-z]*']) {
     const res = await get(`${APP}${evil}`, appCookie);
     check(`caminho "${evil}" nao vira padrao de autorizacao`,
@@ -776,31 +640,22 @@ const passouPeloRbac = async (res, method, caminho) =>
       [sessionId],
     )
   ).rows[0].n;
-  // Sem isto, quem tivesse copia do cookie continuaria renovando a sessao
-  // para sempre: limpar cookie so apaga a copia do navegador.
   check('logout revogou a familia de refresh tokens no SSO (RFC 7009)',
     liveAfter === 0, `${liveAfter} vivo(s)`);
 
   const clearsCookie = (logout.headers.getSetCookie?.() ?? []).some(
-    (c) => c.startsWith(COOKIE_SESSAO) && /Expires=Thu, 01 Jan 1970|Max-Age=0/i.test(c),
+    (c) => c.startsWith(COOKIE_SESSION) && /Expires=Thu, 01 Jan 1970|Max-Age=0/i.test(c),
   );
   check('logout instrui o navegador a apagar o cookie', clearsCookie);
 
-  /* Antes da introspeccao, uma copia do cookie guardada antes do logout seguia
-   * abrindo a API ate o access token vencer: o logout revogava o refresh token,
-   * mas o access token continuava assinado e valido por ate 15 minutos. Agora o
-   * SSO responde que o grant nao tem mais refresh token vivo, e a sessao cai. */
-  const copiaDoCookie = await get(`${APP}/auth/me`, appCookie);
+  const cookieCopy = await get(`${APP}/auth/me`, appCookie);
   check('uma copia do cookie de antes do logout deixa de abrir a API na hora',
-    copiaDoCookie.status === 401, `HTTP ${copiaDoCookie.status}`);
+    cookieCopy.status === 401, `HTTP ${cookieCopy.status}`);
 
-  /* O projeto KRLoc e real e fica. Saem o usuario da rodada, o operador de
-   * teste, o papel desta rodada e as rotas que so ela precisou cadastrar, para
-   * nao acumular acesso administrativo nem catalogo a cada execucao. */
-  const removidos = await limparRodada();
+  const removed = await cleanRun();
 
   console.log(
-    `\nlimpeza: ${removidos} usuario(s), o papel ${PAPEL} e ${rodada.rotas.length} rota(s) de teste removidos`,
+    `\nlimpeza: ${removed} usuario(s), o papel ${ROLE} e ${run.routes.length} rota(s) de teste removidos`,
   );
 
   await db.end();
@@ -808,7 +663,7 @@ const passouPeloRbac = async (res, method, caminho) =>
   process.exit(fail ? 1 : 0);
 })().catch(async (e) => {
   console.error('ERRO:', e);
-  await limparRodada().catch((falha) => console.error('a limpeza tambem falhou:', falha.message));
+  await cleanRun().catch((failure) => console.error('a limpeza tambem falhou:', failure.message));
   await db.end().catch(() => {});
   process.exit(1);
 });

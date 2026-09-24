@@ -8,7 +8,7 @@ import {
   BillingItem,
   buildStatement,
   PriceLookup,
-  reais,
+  toReais,
   Statement,
   StatementDto,
   statementToApi,
@@ -19,7 +19,6 @@ import { SimulationDto } from '../dto/simulation.dto';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-/** O contrato como a cobranca o le: itens, obra e cliente. */
 const CONTRACT_INCLUDE = {
   leaseItems: true,
   lessee: { include: { client: true } },
@@ -29,20 +28,12 @@ export type BillingContractRecord = Prisma.ELeaseGetPayload<{
   include: typeof CONTRACT_INCLUDE;
 }>;
 
-/** Transacao ou cliente normal: a conta roda nos dois. */
 type Db = Prisma.TransactionClient;
 
-/**
- * A cobranca dos contratos: extrato de um contrato, fechamento do mes e
- * simulacao da calculadora. A conta em si mora em `billing/`, sem banco; aqui
- * so se le o que ela precisa, inclusive a tabela de precos em vigor em cada
- * data, do historico que o gatilho `equipment_price_history` escreve.
- */
 @Injectable()
 export class BillingService {
   constructor(private prisma: PrismaService) {}
 
-  /** A tabela em vigor por data. Equipamento sem historico usa a do item. */
   async priceLookup(
     equipmentIds: string[],
     fallback: Map<string, PriceTable>,
@@ -72,7 +63,6 @@ export class BillingService {
         return known;
       }
 
-      // Antes do primeiro registro vale o mais antigo que se conhece.
       let current = entries[0];
 
       for (const entry of entries) {
@@ -87,7 +77,6 @@ export class BillingService {
     return new Map(items.map((item) => [item.equipmentId, priceTable(item)]));
   }
 
-  /** O contrato com o que a conta precisa, ou `contract_not_found`. */
   async contract(
     id: string,
     db: Db = this.prisma,
@@ -102,10 +91,6 @@ export class BillingService {
     return contract;
   }
 
-  /**
-   * O extrato calculado agora. Ativo corre ate `asOf`; concluido, ate o
-   * fechamento; e a indenizacao sai pelo preco do mesmo dia (clausula 7a).
-   */
   async compute(
     contract: BillingContractRecord,
     asOf: Date = new Date(),
@@ -130,11 +115,6 @@ export class BillingService {
     });
   }
 
-  /**
-   * O extrato de um contrato concluido e o que foi gravado no fechamento, na
-   * auditoria: o historico nao muda depois. Contrato fechado antes disso existir
-   * e calculado de novo.
-   */
   async frozen(contractId: string): Promise<StatementDto | null> {
     const closing = await this.prisma.auditLog.findFirst({
       where: { contractId, action: AuditAction.CONTRACT_COMPLETED },
@@ -158,12 +138,6 @@ export class BillingService {
     return statementToApi(await this.compute(contract));
   }
 
-  /**
-   * O fechamento do mes: os contratos fechados nele, com o valor cobrado, e os
-   * que atravessaram o fim do mes ainda ativos, com o que correu ate la. Junto,
-   * o que estava na obra no fim do mes e o que foi para manutencao ou foi
-   * roubado durante ele.
-   */
   async closing(month: string) {
     const { from, to } = monthRange(month);
     const now = new Date();
@@ -323,7 +297,7 @@ export class BillingService {
     }
 
     const sum = <T>(rows: T[], pick: (row: T) => number): number =>
-      reais(
+      toReais(
         rows.reduce((total, row) => total + Math.round(pick(row) * 100), 0),
       );
 
@@ -344,7 +318,6 @@ export class BillingService {
         onSite: onSite.length,
         maintenance: maintenance.length,
         stolen: stolen.length,
-        // Roubos do mes, com contrato fechado ou nao: o que o fechado ja cobrou e o que o ativo vai cobrar.
         stolenIndemnity: sum(stolen, (row) => row.indemnity),
       },
       closed,
@@ -355,12 +328,6 @@ export class BillingService {
     };
   }
 
-  /**
-   * A calculadora: um contrato de mentira, com os equipamentos escolhidos, o
-   * prazo e a devolucao de cada um, calculado pela mesma conta dos contratos de
-   * verdade. Cada equipamento corre ate a propria devolucao; defeito e roubo
-   * entram com a data e com ou sem substituto.
-   */
   async simulate(dto: SimulationDto): Promise<StatementDto> {
     const ids = dto.items.map((item) => item.equipmentId);
     const equipments = await this.prisma.equipment.findMany({
@@ -374,8 +341,6 @@ export class BillingService {
     const start = new Date(dto.startDate);
     const plannedEnd = new Date(dto.plannedEndDate);
 
-    // Devolucao antes da retirada nao existe, e depois do teto a conta vira
-    // ataque: a recusa diz qual campo, como a validacao do DTO.
     const latest = start.getTime() + MAX_SIMULATION_DAYS * MS_PER_DAY;
     const refused = dto.items.flatMap((item, index) => {
       const returned = new Date(item.returnDate).getTime();
@@ -426,19 +391,19 @@ export class BillingService {
       if (!equipment) return [];
 
       const returned = new Date(entry.returnDate);
-      // O contrato congela a tabela do dia da assinatura (7a).
       const atSigning = priceAt(equipment.id, start);
       const base = {
         equipmentId: equipment.id,
         equipmentName: equipment.name,
         equipmentCode: equipment.code,
         equipmentSuffix: equipment.suffix,
-        p_diary: reais(atSigning.daily),
-        p_weekly: atSigning.weekly === null ? null : reais(atSigning.weekly),
+        p_diary: toReais(atSigning.daily),
+        p_weekly: atSigning.weekly === null ? null : toReais(atSigning.weekly),
         p_biweekly:
-          atSigning.biweekly === null ? null : reais(atSigning.biweekly),
-        p_monthly: atSigning.monthly === null ? null : reais(atSigning.monthly),
-        p_indemnity: reais(atSigning.indemnity),
+          atSigning.biweekly === null ? null : toReais(atSigning.biweekly),
+        p_monthly:
+          atSigning.monthly === null ? null : toReais(atSigning.monthly),
+        p_indemnity: toReais(atSigning.indemnity),
         startStatus: 'LEASED',
       };
       const event = entry.event;
@@ -456,8 +421,6 @@ export class BillingService {
         ];
       }
 
-      // Sem substituto, a unidade sai da obra na ocorrencia, e a devolucao nao
-      // conta; com substituto, a ocorrencia fica entre a retirada e a devolucao.
       const when = event.replaced
         ? between(new Date(event.date), start, returned)
         : new Date(Math.max(new Date(event.date).getTime(), start.getTime()));
@@ -470,7 +433,6 @@ export class BillingService {
         replacesItemId: null,
       };
 
-      // O substituto e outra unidade do mesmo codigo; na simulacao, com a mesma tabela.
       return event.replaced
         ? [
             original,
@@ -487,7 +449,6 @@ export class BillingService {
         : [original];
     });
 
-    // O contrato fecha na ultima volta, e a indenizacao sai pelo preco desse dia (7a).
     const finish = new Date(
       Math.max(...items.map((item) => (item.finishDate as Date).getTime())),
     );

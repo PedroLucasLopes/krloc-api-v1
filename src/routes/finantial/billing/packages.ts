@@ -1,7 +1,3 @@
-/**
- * Os pacotes da tabela de precos e a combinacao mais barata deles. Todo valor
- * aqui e em centavos: conta de dinheiro em ponto flutuante erra no centavo.
- */
 export type PackageKind = 'monthly' | 'biweekly' | 'weekly' | 'daily';
 
 export const PACKAGE_DAYS: Readonly<Record<PackageKind, number>> = {
@@ -11,7 +7,6 @@ export const PACKAGE_DAYS: Readonly<Record<PackageKind, number>> = {
   daily: 1,
 };
 
-/** Do maior para o menor: e a ordem em que a combinacao e escrita. */
 const ORDER: readonly PackageKind[] = [
   'monthly',
   'biweekly',
@@ -19,7 +14,6 @@ const ORDER: readonly PackageKind[] = [
   'daily',
 ];
 
-/** A tabela de um equipamento, em centavos. So a diaria e obrigatoria. */
 export interface PriceTable {
   daily: number;
   weekly: number | null;
@@ -28,17 +22,12 @@ export interface PriceTable {
   indemnity: number;
 }
 
-/** O preco do cadastro, em reais, virando centavos. */
 export function toCents(value: number): number;
 export function toCents(value: number | null | undefined): number | null;
 export function toCents(value: number | null | undefined): number | null {
   return value === null || value === undefined ? null : Math.round(value * 100);
 }
 
-/**
- * Pacote opcional com preco zero nao e oferecido: a importacao de planilha
- * gravava celula vazia como 0, e um 0 aqui viraria pacote de graca.
- */
 const offered = (cents: number | null): number | null =>
   cents !== null && cents > 0 ? cents : null;
 
@@ -66,9 +55,7 @@ export interface PackageLine {
 }
 
 export interface Cover {
-  /** Os dias pedidos. */
   days: number;
-  /** Os dias que a combinacao cobre: pode passar dos pedidos, se sair mais barato. */
   coveredDays: number;
   amount: number;
   packages: PackageLine[];
@@ -88,14 +75,6 @@ const better = (a: Best, b: Best): boolean =>
       ? a.covered < b.covered
       : a.count < b.count;
 
-/**
- * A combinacao mais barata de diaria, semana, quinzena e mes que cobre ao menos
- * `days` dias. Pacote sem preco na tabela fica de fora.
- *
- * Empate de valor vai para a combinacao que cobre menos dias, e depois para a de
- * menos pacotes: dez dias saem "1 semanal + 3 diarias", e nao uma quinzena de
- * mesmo preco que sobra cinco dias.
- */
 export function cheapestCover(prices: PriceTable, days: number): Cover {
   const available = ORDER.filter((kind) => priceOf(prices, kind) !== null);
   const best: Best[] = [{ cost: 0, covered: 0, count: 0, choice: null }];
