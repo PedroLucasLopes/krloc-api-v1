@@ -66,6 +66,10 @@ ordem de subida; o SSO só precisa estar de pé quando alguém for logar.
 
 ## 🚀 CI/CD
 
+**O trabalho nasce numa branch `feat/*`, `fix/*` ou `bugfix/*`, vai por pull request para a `development`
+e só chega na `main` por um segundo pull request, revisado à mão.** As duas branches exigem pipeline verde
+e recusam push direto. O fluxo inteiro está em [`ecossistema.md`](https://github.com/PedroLucasLopes/sso-api-v1/blob/main/docs/ecossistema.md).
+
 `.github/workflows/ci.yml`, no GitHub Actions:
 
 | Quando | O que roda |
