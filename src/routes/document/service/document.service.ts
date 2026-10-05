@@ -3,11 +3,21 @@ import { Response } from 'express';
 import { LeaseStatus } from 'generated/prisma/client';
 import { ApiException } from 'src/global/error/apiError';
 import { PrismaService } from 'src/global/prisma/prisma.service';
-import { statementToApi } from 'src/routes/finantial/billing/statement';
+import {
+  statementToApi,
+  unitCode,
+} from 'src/routes/finantial/billing/statement';
+import { SimulationDto } from 'src/routes/finantial/dto/simulation.dto';
 import { BillingService } from 'src/routes/finantial/service/billing.service';
+import { EquipmentQuoteDto } from '../dto/quote.dto';
 import { date } from '../helper/report.helper';
 import { contractDefinition } from '../pdf/contract.pdf';
 import { render } from '../pdf/pdf';
+import {
+  contractQuoteDefinition,
+  equipmentQuoteDefinition,
+  QuoteUnit,
+} from '../pdf/quote.pdf';
 import { closingDefinition, statementDefinition } from '../pdf/report.pdf';
 import { DocumentTemplateService } from './documentTemplate.service';
 
@@ -114,6 +124,56 @@ export class DocumentService {
       buffer,
       `Baixa ${contract.lessee.name} - ${contract.lessee.client.name} ${fileDate(contract.startDate)}.pdf`,
       'baixa.pdf',
+    );
+  }
+
+  public async generateEquipmentQuote(
+    dto: EquipmentQuoteDto,
+    res: Response,
+  ): Promise<void> {
+    const equipments = await this.prisma.equipment.findMany({
+      where: { id: { in: dto.equipmentIds } },
+      orderBy: [{ code: 'asc' }, { suffix: 'asc' }],
+    });
+
+    if (equipments.length !== dto.equipmentIds.length) {
+      throw new ApiException('equipment_not_found');
+    }
+
+    const template = await this.templates.report();
+    const units: QuoteUnit[] = equipments.map((equipment) => ({
+      code: unitCode(equipment.code, equipment.suffix),
+      name: equipment.name,
+      daily: equipment.p_diary,
+      weekly: equipment.p_weekly || null,
+      biweekly: equipment.p_biweekly || null,
+      monthly: equipment.p_monthly || null,
+      indemnity: equipment.p_indemnity,
+    }));
+
+    const buffer = await render(equipmentQuoteDefinition(units, template));
+
+    this.send(
+      res,
+      buffer,
+      `Orçamento de equipamentos ${fileDate(new Date())}.pdf`,
+      'orcamento-equipamentos.pdf',
+    );
+  }
+
+  public async generateContractQuote(
+    dto: SimulationDto,
+    res: Response,
+  ): Promise<void> {
+    const template = await this.templates.report();
+    const statement = await this.billing.simulate(dto);
+    const buffer = await render(contractQuoteDefinition(statement, template));
+
+    this.send(
+      res,
+      buffer,
+      `Orçamento de contrato ${fileDate(new Date(dto.startDate))}.pdf`,
+      'orcamento-contrato.pdf',
     );
   }
 

@@ -274,6 +274,25 @@ código**: ele é um `DocumentTemplate` no banco, versionado.
 - O logo é PNG em base64 no próprio registro. Não há mais asset lido de `process.cwd()`, nem a linha
   no Dockerfile que copiava `src/global/assets` para fora de `dist/`.
 
+### Orçamento, em dois formatos
+
+Os dois saem do modelo de `kind = REPORT`, como o extrato, e **nenhum dos dois grava nada**.
+
+| Rota | Corpo | O que sai |
+|---|---|---|
+| `POST /api/generate/quote/equipment` | `{ equipmentIds: [...] }` | a tabela de preços das unidades escolhidas: diária, semana, quinzena, mês e indenização |
+| `POST /api/generate/quote/contract` | o mesmo corpo de `POST /finantial/simulate` | o orçamento do contrato simulado: por posição, as linhas da cobrança e os totais |
+
+- **O orçamento de contrato é a calculadora em papel.** Ele chama o mesmo `billing.simulate`, então o
+  documento e a tela não podem divergir: é uma conta só, no mesmo motor.
+- **Período sem preço na tabela sai como traço**, não como zero, e a nota explica que a cobrança usa a
+  combinação mais barata entre os períodos que têm valor. Unidade sem diária leva o aviso de
+  `missingPrice` no próprio documento.
+- **Os dois dizem que são orçamento**, sem compromisso, e que a locação só se formaliza pelo contrato
+  assinado. Documento de preço que não diz isso vira promessa.
+- As duas rotas são caras (`HEAVY_ROUTE_LIMIT`, pelo `@Throttle` do controller) e, como toda rota
+  nova, **só respondem depois de cadastradas no catálogo do projeto KRLoc no SSO**; sem isso, 404.
+
 ---
 
 ## 🔑 Autenticação
@@ -348,7 +367,7 @@ rota que faltar e desfaz tudo no fim, inclusive quando quebra no meio.
 | `/api/client` | GET · GET/:id · POST · PUT/:id · DELETE/:id | valida CEP e CPF/CNPJ |
 | `/api/lessee` | GET · GET/:id · GET/lesseesbyclient/:clientId · POST · PUT/:id · DELETE/:id | |
 | `/api/elease` | GET · GET/:id · POST · POST/{start,close,cancel}/:id · PUT/{add,remove,status,replace}/:id | |
-| `/api/generate` | POST/{contract,finantial,closure}/:id · POST/finantial | devolve PDF: contrato, extrato, baixa e fechamento do mês |
+| `/api/generate` | POST/{contract,finantial,closure}/:id · POST/finantial · POST/quote/{equipment,contract} | devolve PDF: contrato, extrato, baixa, fechamento do mês e os dois orçamentos |
 | `/api/document` | GET/template/:kind · GET/template/:kind/versions | o modelo em vigor e o histórico de versões. Ver "Documentos em PDF" |
 | `/api/finantial` | GET (`?month=AAAA-MM`) · GET/:id · POST/simulate | fechamento do mês, extrato do contrato e calculadora. Ver "Cobrança" |
 
