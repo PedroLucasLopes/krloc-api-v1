@@ -12,6 +12,8 @@ import { Response } from 'express';
 import { HEAVY_ROUTE_LIMIT } from 'src/global/utils/throttle';
 import { currentMonth } from 'src/routes/finantial/billing/calendar';
 import { ClosingQueryDto } from 'src/routes/finantial/dto/closingQuery.dto';
+import { SimulationDto } from 'src/routes/finantial/dto/simulation.dto';
+import { EquipmentQuoteDto } from '../dto/quote.dto';
 import { DocumentService } from '../service/document.service';
 
 @Controller('generate')
@@ -26,6 +28,24 @@ export class DocumentController {
     @Res() res: Response,
   ): Promise<void> {
     return await this.documentService.generateContract(id, res);
+  }
+
+  @Post('quote/equipment')
+  @HttpCode(HttpStatus.OK)
+  async generateEquipmentQuote(
+    @Body() body: EquipmentQuoteDto,
+    @Res() res: Response,
+  ): Promise<void> {
+    return await this.documentService.generateEquipmentQuote(body, res);
+  }
+
+  @Post('quote/contract')
+  @HttpCode(HttpStatus.OK)
+  async generateContractQuote(
+    @Body() body: SimulationDto,
+    @Res() res: Response,
+  ): Promise<void> {
+    return await this.documentService.generateContractQuote(body, res);
   }
 
   @Post('finantial')
