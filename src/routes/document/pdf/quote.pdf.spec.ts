@@ -84,7 +84,13 @@ const rows = (content: Content[]): string[][] =>
     .filter((item): item is ContentTable => 'table' in (item as ContentTable))
     .flatMap((item) =>
       item.table.body.map((row) =>
-        row.map((cell) => String((cell as { text?: unknown }).text ?? '')),
+        row.map((cell) => {
+          const text = (cell as { text?: unknown }).text;
+
+          return typeof text === 'string' || typeof text === 'number'
+            ? String(text)
+            : '';
+        }),
       ),
     );
 
@@ -133,10 +139,10 @@ describe('orcamento em PDF', () => {
   });
 
   it('avisa quando a unidade nao tem diaria na tabela', () => {
-    const missing = {
+    const missing: StatementDto = {
       ...statement,
       positions: [{ ...statement.positions[0], missingPrice: true }],
-    } as unknown as StatementDto;
+    };
 
     const definition = contractQuoteDefinition(missing, template);
 
