@@ -62,6 +62,7 @@ const SSO = env.SSO_ISSUER.replace(/\/+$/, '');
 const APP_PUBLIC = env.APP_BASE_URL.replace(/\/+$/, '');
 const APP_PUBLIC_ORIGIN = new URL(APP_PUBLIC).origin;
 const APP = env.APP_TEST_BASE_URL.replace(/\/+$/, '');
+const APP_SSO_DOWN = (env.APP_TEST_SSO_DOWN_BASE_URL ?? '').replace(/\/+$/, '');
 
 const withTransport = (url) =>
   String(url).replace(APP_PUBLIC_ORIGIN, new URL(APP).origin);
@@ -114,6 +115,10 @@ const readCookies = (res) =>
   (res.headers.getSetCookie?.() ?? [])
     .map((c) => c.split(';')[0])
     .join('; ');
+
+const clearsSession = (res) =>
+  (res.headers.getSetCookie?.() ?? []).some(
+    (c) => c.startsWith(COOKIE_SESSION) && /Expires=Thu, 01 Jan 1970|Max-Age=0/i.test(c));
 
 const get = (url, cookie) =>
   fetch(url, { redirect: 'manual', headers: cookie ? { cookie } : {} });
@@ -577,6 +582,86 @@ const passedRbac = async (res, method, routePath) =>
       (c) => c.startsWith(COOKIE_SESSION) && /Expires=Thu, 01 Jan 1970|Max-Age=0/i.test(c)),
     'Set-Cookie de limpeza');
 
+  console.log('\n=== SSO fora do ar nao derruba a sessao ===');
+
+  if (!APP_SSO_DOWN) {
+    console.log('  PULADO | falta APP_TEST_SSO_DOWN_BASE_URL: uma segunda instancia sem caminho ate o SSO (ver .env.test.example)');
+  } else {
+    const liveSession = openCookie(env.COOKIE_SECRET, new RegExp(`${COOKIE_SESSION}=([^;]+)`).exec(appCookie)[1]);
+    const staleCookie = appCookie.replace(
+      new RegExp(`${COOKIE_SESSION}=[^;]+`),
+      `${COOKIE_SESSION}=${sealCookie(env.COOKIE_SECRET, { ...liveSession, expiresAt: Math.floor(Date.now() / 1000) - 10 })}`,
+    );
+
+    const downHealth = await fetch(`${APP_SSO_DOWN}/health`).catch(() => null);
+    check('a segunda instancia, sem caminho ate o SSO, esta de pe',
+      downHealth?.status === 200, downHealth ? `HTTP ${downHealth.status}` : 'sem resposta');
+
+    const staleApi = await fetch(`${APP_SSO_DOWN}/auth/me`, {
+      headers: { cookie: staleCookie, accept: 'application/json' },
+      redirect: 'manual',
+    });
+    check('access token vencido e SSO sem resposta: 503 sso_unavailable, nao login_required',
+      staleApi.status === 503 && await code(staleApi) === 'sso_unavailable',
+      `HTTP ${staleApi.status} ${await code(staleApi)}`);
+    check('e a resposta nao apaga o cookie da sessao',
+      !clearsSession(staleApi), readCookies(staleApi) || 'sem Set-Cookie');
+
+    const stalePage = await fetch(`${APP_SSO_DOWN}/equipment`, {
+      headers: { cookie: staleCookie, 'sec-fetch-dest': 'document', accept: 'text/html' },
+      redirect: 'manual',
+    });
+    check('navegacao de pagina tambem responde 503, sem mandar ao login nem apagar o cookie',
+      stalePage.status === 503 && !clearsSession(stalePage), `HTTP ${stalePage.status}`);
+
+    const staleToken = await get(`${APP_SSO_DOWN}/auth/token`, staleCookie);
+    check('GET /auth/token responde 503 sso_unavailable e mantem o cookie',
+      staleToken.status === 503 && await code(staleToken) === 'sso_unavailable' && !clearsSession(staleToken),
+      `HTTP ${staleToken.status} ${await code(staleToken)}`);
+
+    const staleVisitor = await get(`${APP_SSO_DOWN}/visitor`, staleCookie);
+    check('na rota opcional, a sessao que nao renova segue como visitante',
+      staleVisitor.status === 200 && (await staleVisitor.json().catch(() => null))?.signedIn === false,
+      `HTTP ${staleVisitor.status}`);
+    check('sem apagar o cookie da sessao',
+      !clearsSession(staleVisitor), readCookies(staleVisitor) || 'sem Set-Cookie');
+
+    const downVisit = (headers) => fetch(`${APP_SSO_DOWN}/visitor`, { method: 'POST', headers });
+
+    const downNoToken = await downVisit({ cookie: staleCookie });
+    check('com o SSO fora do ar, escrita por cookie continua exigindo X-CSRF-Token',
+      downNoToken.status === 403 && await code(downNoToken) === 'csrf_token_invalid',
+      `HTTP ${downNoToken.status}`);
+
+    const downWithToken = await downVisit({ cookie: staleCookie, 'x-csrf-token': csrf });
+    check('com o header, a escrita na rota opcional segue anonima e o cookie fica',
+      downWithToken.status === 200 && (await downWithToken.json().catch(() => null))?.signedIn === false
+        && !clearsSession(downWithToken),
+      `HTTP ${downWithToken.status}`);
+
+    const unverifiable = await get(`${APP_SSO_DOWN}/home`, appCookie);
+    check('access token valido que a instancia nao consegue conferir, sem JWKS: 503, nao login_required',
+      unverifiable.status === 503 && await code(unverifiable) === 'sso_unavailable' && !clearsSession(unverifiable),
+      `HTTP ${unverifiable.status} ${await code(unverifiable)}`);
+
+    const bearerDown = await fetch(`${APP_SSO_DOWN}/home`, { headers: bearer });
+    check('Bearer que nao da para conferir: 503 sso_unavailable, nao invalid_token',
+      bearerDown.status === 503 && await code(bearerDown) === 'sso_unavailable',
+      `HTTP ${bearerDown.status} ${await code(bearerDown)}`);
+
+    const bearerVisitor = await fetch(`${APP_SSO_DOWN}/visitor`, { headers: bearer });
+    check('na rota opcional, o mesmo Bearer segue como visitante',
+      bearerVisitor.status === 200 && (await bearerVisitor.json().catch(() => null))?.signedIn === false,
+      `HTTP ${bearerVisitor.status}`);
+
+    const backOnline = await get(`${APP}/equipment`, staleCookie);
+    check('com o SSO de volta, a mesma sessao renova sem login',
+      await passedRbac(backOnline, 'GET', '/equipment') && readCookies(backOnline).includes(COOKIE_SESSION),
+      `HTTP ${backOnline.status}`);
+
+    appCookie = readCookies(backOnline) || appCookie;
+  }
+
   console.log('\n=== sessao morta manda ao login e volta para onde a pessoa estava ===');
 
   const SCREEN = `${APP_PUBLIC_ORIGIN}/accessories`;
@@ -729,6 +814,11 @@ const passedRbac = async (res, method, routePath) =>
   );
 
   await db.end();
+
+  if (!APP_SSO_DOWN) {
+    console.log('\nPULADO: "SSO fora do ar nao derruba a sessao", por falta de APP_TEST_SSO_DOWN_BASE_URL');
+  }
+
   console.log(`\n=========== ${pass} passaram, ${fail} falharam ===========\n`);
   process.exit(fail ? 1 : 0);
 })().catch(async (e) => {

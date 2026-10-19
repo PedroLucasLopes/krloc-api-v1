@@ -29,7 +29,7 @@ revisão de segurança, com nota e vetor CVSS de cada achado, está em [`PENTEST
 npm run start:dev
 npm run build
 npm run lint
-npm run test:sso        # ponta a ponta contra a stack de pé, 107 asserções
+npm run test:sso        # ponta a ponta contra a stack de pé, 120 asserções (107 sem a instância sem SSO)
 npx jest                # unidade: cobrança, contrato de erro, filtros do Prisma, e as regras de situação do equipamento e da associação de acessório
 npx prisma migrate dev
 ```
@@ -279,6 +279,11 @@ if (res.status === 401) {
 }
 ```
 
+⚠️ **SSO fora do ar não derruba a sessão** (a partir do `sso-client` 0.6.0). A chamada que precisava
+dele volta `503` com `error: "sso_unavailable"` e não apaga o cookie, e a rota opcional segue sem
+usuário. O front não manda ao login nesse caso, porque o login também passa pelo SSO: avisa e tenta de
+novo. Com o SSO de volta, a mesma sessão renova sozinha.
+
 ### ⚠️ Permissões vivem no SSO, não aqui
 
 Não há tabela de permissão local, nem manifesto. Para uma rota nova responder é preciso, **no console
@@ -295,6 +300,18 @@ agora. Papel trocado já sai com token novo na mesma resposta; grant inativo der
 
 O `test:sso` não depende do catálogo real: cria um papel próprio só com as rotas que usa, cadastra a
 rota que faltar e desfaz tudo no fim, inclusive quando quebra no meio.
+
+A seção "SSO fora do ar não derruba a sessão" precisa de uma segunda instância desta API, igual à
+primeira mas sem caminho até o SSO, em `APP_TEST_SSO_DOWN_BASE_URL`. Em container, ao lado da stack:
+
+```bash
+docker compose run --rm --no-deps -p 3011:3000 -e SSO_INTERNAL_URL=http://127.0.0.1:1/sso krloc
+```
+
+Ela recebe a sessão e o Bearer da primeira e confere que a falta de resposta dá `503 sso_unavailable`
+sem apagar o cookie, inclusive em `/api/auth/token` e na navegação de página, que a rota opcional segue
+sem usuário, que o CSRF continua valendo, e que a mesma sessão renova quando volta à instância com o
+SSO. Sem a variável, a seção é pulada e o resumo avisa.
 
 ---
 
