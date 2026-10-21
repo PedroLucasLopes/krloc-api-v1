@@ -512,6 +512,71 @@ const passedRbac = async (res, method, routePath) =>
 
   appCookie = readCookies(withExpiredToken) || appCookie;
 
+  console.log('\n=== rota opcional: pagina publica que reconhece quem entrou ===');
+
+  const visitor = await get(`${APP}/visitor`);
+  const visitorBody = visitor.ok ? await visitor.json() : null;
+  check('GET /visitor sem credencial responde 200, sem pedir login',
+    visitor.status === 200 && visitorBody?.signedIn === false && visitorBody?.user === null,
+    `HTTP ${visitor.status}`);
+  check('a resposta anonima nao escreve cookie',
+    (visitor.headers.getSetCookie?.() ?? []).length === 0, readCookies(visitor) || 'sem Set-Cookie');
+
+  const visitorPage = await fetch(`${APP}/visitor`, {
+    headers: { 'sec-fetch-dest': 'document', accept: 'text/html' },
+    redirect: 'manual',
+  });
+  check('navegacao de pagina sem sessao tambem nao vai ao login',
+    visitorPage.status === 200, `HTTP ${visitorPage.status}`);
+
+  const knownByCookie = await get(`${APP}/visitor`, appCookie);
+  const knownCookieBody = knownByCookie.ok ? await knownByCookie.json() : null;
+  check('com a sessao, a rota opcional reconhece a pessoa',
+    knownCookieBody?.signedIn === true && knownCookieBody?.user?.email === `krloc-${tag}@exemplo.com`,
+    knownCookieBody?.user?.email ?? `HTTP ${knownByCookie.status}`);
+  check('e hidrata o Authorization como a rota autenticada',
+    knownCookieBody?.authorizationHeader === true && knownCookieBody?.tokenAvailable === true);
+
+  const knownByBearer = await fetch(`${APP}/visitor`, { headers: bearer });
+  const knownBearerBody = knownByBearer.ok ? await knownByBearer.json() : null;
+  check('pelo Bearer, a rota opcional reconhece a mesma pessoa',
+    knownBearerBody?.signedIn === true && knownBearerBody?.user?.id === knownCookieBody?.user?.id,
+    `HTTP ${knownByBearer.status}`);
+
+  const visitorBadBearer = await fetch(`${APP}/visitor`, { headers: { Authorization: 'Bearer nao.e.um.jwt' } });
+  check('Bearer invalido continua 401 invalid_token, mesmo na rota opcional',
+    visitorBadBearer.status === 401 && await code(visitorBadBearer) === 'invalid_token',
+    `HTTP ${visitorBadBearer.status}`);
+
+  const visit = (headers) => fetch(`${APP}/visitor`, { method: 'POST', headers });
+
+  const visitNoToken = await visit({ cookie: appCookie });
+  check('escrita por cookie na rota opcional continua exigindo X-CSRF-Token',
+    visitNoToken.status === 403 && await code(visitNoToken) === 'csrf_token_invalid',
+    `HTTP ${visitNoToken.status}`);
+
+  const visitWithToken = await visit({ cookie: appCookie, 'x-csrf-token': csrf });
+  check('com o header, a escrita reconhece a pessoa',
+    visitWithToken.status === 200 && (await visitWithToken.json())?.signedIn === true,
+    `HTTP ${visitWithToken.status}`);
+
+  const visitAnonymous = await visit({});
+  check('escrita sem cookie segue anonima: nao ha sessao para forjar',
+    visitAnonymous.status === 200 && (await visitAnonymous.json())?.signedIn === false,
+    `HTTP ${visitAnonymous.status}`);
+
+  const deadVisit = await fetch(`${APP}/visitor`, {
+    headers: { cookie: `${COOKIE_SESSION}=${allDead}`, 'sec-fetch-dest': 'document', accept: 'text/html' },
+    redirect: 'manual',
+  });
+  check('refresh token morto na rota opcional: segue como visitante, sem ir ao login',
+    deadVisit.status === 200 && (await deadVisit.json())?.signedIn === false,
+    `HTTP ${deadVisit.status}`);
+  check('e a resposta apaga o cookie da sessao morta',
+    (deadVisit.headers.getSetCookie?.() ?? []).some(
+      (c) => c.startsWith(COOKIE_SESSION) && /Expires=Thu, 01 Jan 1970|Max-Age=0/i.test(c)),
+    'Set-Cookie de limpeza');
+
   console.log('\n=== sessao morta manda ao login e volta para onde a pessoa estava ===');
 
   const SCREEN = `${APP_PUBLIC_ORIGIN}/accessories`;
@@ -651,6 +716,11 @@ const passedRbac = async (res, method, routePath) =>
   const cookieCopy = await get(`${APP}/auth/me`, appCookie);
   check('uma copia do cookie de antes do logout deixa de abrir a API na hora',
     cookieCopy.status === 401, `HTTP ${cookieCopy.status}`);
+
+  const visitorCopy = await get(`${APP}/visitor`, appCookie);
+  check('na rota opcional, a mesma copia vira visitante, sem login_required',
+    visitorCopy.status === 200 && (await visitorCopy.json().catch(() => null))?.signedIn === false,
+    `HTTP ${visitorCopy.status}`);
 
   const removed = await cleanRun();
 
