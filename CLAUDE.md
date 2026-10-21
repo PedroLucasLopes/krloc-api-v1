@@ -29,7 +29,7 @@ revisão de segurança, com nota e vetor CVSS de cada achado, está em [`PENTEST
 npm run start:dev
 npm run build
 npm run lint
-npm run test:sso        # ponta a ponta contra a stack de pé, 94 asserções
+npm run test:sso        # ponta a ponta contra a stack de pé, 107 asserções
 npx jest                # unidade: cobrança, contrato de erro, filtros do Prisma, e as regras de situação do equipamento e da associação de acessório
 npx prisma migrate dev
 ```
@@ -311,6 +311,7 @@ faltando derruba o boot com a lista do que falta.
 | Decorator | Efeito |
 |---|---|
 | `@SsoPublic()` | ignora sessão e RBAC (health check) |
+| `@SsoOptional()` | lê a sessão ou o Bearer quando houver; sem credencial, ou com a sessão morta, segue sem usuário e nunca manda ao login. Escrita com sessão ainda exige `X-CSRF-Token`. A partir do `sso-client` 0.6.0 |
 | `@SsoAuthenticated()` | exige sessão, dispensa permissão por rota |
 | _(nenhum)_ | exige sessão **e** permissão correspondente; sem ela, 404 como rota inexistente |
 | `@CurrentUser()` | injeta a identidade no handler |
@@ -362,6 +363,7 @@ rota que faltar e desfaz tudo no fim, inclusive quando quebra no meio.
 | `/api/health` | GET | `@SsoPublic()`, healthcheck do container |
 | `/api/auth/*` | GET · POST | instaladas pela biblioteca. O `callback` devolve documento, não `302` |
 | `/api/home` | GET | `@SsoAuthenticated()`, devolve o estado da sessão para o front |
+| `/api/visitor` | GET · POST | `@SsoOptional()`, devolve quem está do outro lado, inclusive ninguém (`signedIn: false`). O `POST` não grava nada: existe para o `test:sso` conferir que escrita com sessão numa rota opcional ainda exige `X-CSRF-Token` |
 | `/api/equipment` | GET · GET/:id · POST · POST/upload · POST/reactivate/:id · PUT/:id · DELETE/:id | delete = soft (`RETIRED`); reativar é o único caminho de volta |
 | `/api/accessory` | GET · GET/:id · POST · POST/upload · POST/associate · PUT/:id · DELETE/:id | |
 | `/api/client` | GET · GET/:id · POST · PUT/:id · DELETE/:id | valida CEP e CPF/CNPJ |
