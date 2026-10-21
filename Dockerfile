@@ -8,7 +8,7 @@
 # alpine/musl e seguro e nao existe binaryTarget a declarar.
 
 ########################  build  #######################
-FROM node:22-alpine AS build
+FROM node:26-alpine AS build
 WORKDIR /app
 
 # @pedrolucaslopes/sso-client vem do GitHub Packages, que exige token ate para
@@ -29,7 +29,7 @@ FROM build AS migrate
 CMD ["npx", "prisma", "migrate", "deploy"]
 
 #######################  runtime  ######################
-FROM node:22-alpine AS runtime
+FROM node:26-alpine AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 
@@ -43,11 +43,6 @@ RUN --mount=type=bind,source=.npmrc,target=/app/.npmrc \
     npm ci --omit=dev && npm cache clean --force
 
 COPY --from=build /app/dist dist
-
-# O FormatService le path.resolve(process.cwd(), 'src/global/assets/logo.png'),
-# ou seja, relativo ao WORKDIR e nao ao __dirname.
-# TODO: trocar por resolucao via __dirname e mover o asset para dist/.
-COPY --from=build /app/src/global/assets src/global/assets
 
 USER node
 EXPOSE 3000

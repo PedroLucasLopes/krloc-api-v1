@@ -116,7 +116,9 @@ model ELease {
   createdAt            DateTime             @default(now())
   updatedAt            DateTime             @updatedAt
   contract_generated   DateTime?
+  documentTemplateId   String?
   auditLogs            AuditLog[]
+  documentTemplate     DocumentTemplate?    @relation(fields: [documentTemplateId], references: [id])
   lessee               Lessee               @relation(fields: [lesseeId], references: [id])
   equipments           Equipment[]
   leaseItems           LeaseItem[]
@@ -204,4 +206,26 @@ enum AuditAction {
   EQUIPMENT_REMOVED
   EQUIPMENT_STATUS_CHANGED
   EQUIPMENT_REPLACE
+}
+
+/// Modelo do documento gerado. O texto e a ordem dos blocos moram aqui, nao no
+/// codigo: cada publicacao e uma versao nova, imutavel, e o contrato guarda a
+/// versao com que foi gerado. Sem isso, um contrato refeito depois de uma
+/// mudanca de texto sairia diferente do que foi assinado.
+model DocumentTemplate {
+  id        String       @id @default(uuid())
+  kind      DocumentKind
+  version   Int
+  issuer    Json
+  content   Json
+  logo      String?
+  createdAt DateTime     @default(now())
+  eleases   ELease[]
+
+  @@unique([kind, version])
+}
+
+enum DocumentKind {
+  CONTRACT
+  REPORT
 }
